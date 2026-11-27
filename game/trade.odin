@@ -164,7 +164,7 @@ buy :: proc(g: ^Game, good: Good, n: int) -> (count, cost: int) {
 	i := g.docked
 	if i == NO_ISLAND || good not_in g.trades[i] {return}
 	for count < n {
-		p := sell_price(g, i, good)
+		p := your_cost(g, i, good)
 		if p > g.money || hold_used(g) + GOODS[good].tons > HOLD_TONS || g.cargo[good] >= CARGO_MAX {break}
 		g.money -= p
 		g.cargo[good] += 1
@@ -180,7 +180,7 @@ sell :: proc(g: ^Game, good: Good, n: int) -> (count, takings: int) {
 	i := g.docked
 	if i == NO_ISLAND || good not_in g.trades[i] {return}
 	for count < n && g.cargo[good] > 0 {
-		p := buy_price(g, i, good)
+		p := your_take(g, i, good)
 		if g.money + p > MONEY_MAX {break}
 		g.money += p
 		g.cargo[good] -= 1

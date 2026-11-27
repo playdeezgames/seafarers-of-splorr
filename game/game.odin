@@ -19,6 +19,7 @@ LOG_LEN :: 40
 
 Screen :: enum u8 {
 	Title,
+	Start, // choosing the captain (Phase 6)
 	Sea,
 	Docked,
 	Over, // retired or dead: the score
@@ -44,6 +45,12 @@ Sub :: enum u8 {
 	Vendor, // the street vendor
 	Book, // the price book for g.book_good, opened from the chart
 	Alley, // the dark alley's card table
+	Custom, // spending a custom captain's points (on the Start screen)
+	Crew, // the crew list
+	Member, // one crew member (g.pick)
+	Tavern, // sailors for hire
+	Candidate, // one sailor for hire (g.pick)
+	Logbook, // the captain's log, opened from the chart
 }
 
 // Keyboard and gamepad commands; order matches ACTION in web/index.html.
@@ -98,6 +105,14 @@ Cmd :: enum u8 {
 	Bet, // arg: times the minimum stake
 	Fold,
 	Next_Page, // Head for: the next page of islands
+	Begin, // arg: Profession, or QUICK
+	Spend, // arg: Skill, a custom captain's next SKILL_STEP points
+	Pick_Member, // arg: crew index
+	Dismiss,
+	Fish,
+	Pick_Candidate, // arg: candidate index
+	Hire,
+	Log_Page, // the captain's log: the next page
 }
 
 HEAD_FOR_PAGE :: MENU_MAX - 2 // islands a page when they do not all fit: leaves room for More and Back
@@ -168,6 +183,16 @@ Game :: struct {
 	hand_won:   bool,
 	bet:        int,
 	page:       int, // Head for page
+	crew:       [CREW_MAX]Member, // crew[0] is the captain
+	n_crew:     int,
+	candidates: [CANDIDATES_MAX]Member, // at the docked island's tavern
+	n_candidates: int,
+	wage_turns: int, // turns since wages were last paid
+	logbook:    [LOGBOOK_MAX]Log_Entry,
+	n_logbook:  int,
+	log_page:   int,
+	spent:      [Skill]int, // a custom captain's points, while choosing
+	palmed:     bool, // the last alley hand's third card was swapped
 	muted:      bool, // mirrors the page's mute setting, for the menu label
 	// Requests to the web layer, cleared by it.
 	want_save:  bool,
@@ -210,6 +235,8 @@ start_world :: proc(g: ^Game, seed: u64) {
 	g.health = STAT_MAX
 	g.foul = {}
 	g.outcome = .None
+	plain_captain(g)
+	g.n_candidates, g.n_logbook, g.wage_turns, g.log_page = 0, 0, 0, 0
 	if g.n_islands > 0 {
 		if x, y, ok := mooring(g, 0); ok {
 			g.ship.x, g.ship.y = x, y
@@ -241,7 +268,20 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 		add(g, &m, sound_label, .Sound_Toggle)
 	case .Over:
 		add(g, &m, "New voyage", .New_Voyage)
+		if logbook_pages(g) > 1 {addf(g, &m, .Log_Page, 0, "Log: page %d of %d", g.log_page % logbook_pages(g) + 1, logbook_pages(g))}
 		add(g, &m, sound_label, .Sound_Toggle)
+	case .Start:
+		if g.sub == .Custom {
+			for s in Skill {
+				addf(g, &m, .Spend, int(s), "%s %d%%", SKILL_NAMES[s], BASE_SKILL[s] + g.spent[s])
+			}
+			addf(g, &m, .Begin, int(Profession.Custom), "Set sail (%d left)", points_left(g))
+			return
+		}
+		add(g, &m, "Quick start", .Begin, QUICK)
+		for p in Profession.Hunter ..= Profession.Warrior {add(g, &m, PROFESSION_NAMES[p], .Begin, int(p))}
+		add(g, &m, "Custom", .Open, int(Sub.Custom))
+		add(g, &m, "Back", .To_Title)
 	case .Docked:
 		if g.sub == .Careen {
 			addf(g, &m, .Careen, int(Side.Port), "Port side %d%%", hull_clean(g, .Port))
@@ -254,7 +294,7 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			i := g.docked
 			for good in Good {
 				if good in g.trades[i] {
-					addf(g, &m, .Pick_Good, int(good), "%s %d/%d", GOODS[good].name, sell_price(g, i, good), buy_price(g, i, good))
+					addf(g, &m, .Pick_Good, int(good), "%s %d/%d", GOODS[good].name, your_cost(g, i, good), your_take(g, i, good))
 				}
 			}
 			addf(g, &m, .Pick_Good, RATIONS, "Rations %d", ration_price(g, i))
@@ -267,10 +307,10 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 				add(g, &m, "Buy 500", .Buy, 50)
 			} else {
 				good := Good(g.trade_good)
-				addf(g, &m, .Buy, 1, "Buy 1 at %d", sell_price(g, g.docked, good))
+				addf(g, &m, .Buy, 1, "Buy 1 at %d", your_cost(g, g.docked, good))
 				add(g, &m, "Buy 10", .Buy, 10)
 				add(g, &m, "Buy max", .Buy, ALL)
-				addf(g, &m, .Sell, 1, "Sell 1 at %d", buy_price(g, g.docked, good))
+				addf(g, &m, .Sell, 1, "Sell 1 at %d", your_take(g, g.docked, good))
 				add(g, &m, "Sell 10", .Sell, 10)
 				add(g, &m, "Sell all", .Sell, ALL)
 			}
@@ -309,12 +349,15 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 				add(g, &m, "Back", .Back)
 			}
 			return
+		case .Crew, .Member, .Tavern, .Candidate:
+			crew_menu(g, &m)
+			return
 		case .Vendor:
 			addf(g, &m, .Vendor_Buy, 1, "Buy %d rations at %d", VENDOR_LOT, vendor_price(g, g.docked))
 			addf(g, &m, .Vendor_Buy, 5, "Buy %d", 5 * VENDOR_LOT)
 			add(g, &m, "Back", .Back)
 			return
-		case .None, .Heading, .Adjust, .Speed, .Sail, .Head_For, .Dock, .Chart, .Careen, .Book:
+		case .None, .Heading, .Adjust, .Speed, .Sail, .Head_For, .Dock, .Chart, .Careen, .Book, .Custom, .Logbook:
 		}
 		ds := g.districts[g.docked] if g.docked != NO_ISLAND else {}
 		add(g, &m, "Cast off", .Undock)
@@ -322,8 +365,9 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 		if .Delivery_Service in ds {add(g, &m, "Delivery service", .Open, int(Sub.Deliveries))}
 		if .Street_Vendor in ds {add(g, &m, "Street vendor", .Open, int(Sub.Vendor))}
 		if .Dark_Alley in ds {add(g, &m, "Dark alley", .Open, int(Sub.Alley))}
+		if .Tavern in ds {add(g, &m, "Tavern", .Open, int(Sub.Tavern))}
 		add(g, &m, "Careen", .Open, int(Sub.Careen))
-		add(g, &m, sound_label, .Sound_Toggle)
+		add(g, &m, "Crew", .Open, int(Sub.Crew))
 		add(g, &m, "Back to title", .To_Title)
 	case .Sea:
 		switch g.sub {
@@ -336,7 +380,7 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			near: [ISLAND_MAX]int
 			if dockable(g, near[:]) > 0 {add(g, &m, "Dock", .Dock, NO_ISLAND)}
 			add(g, &m, "Chart", .Open, int(Sub.Chart))
-			add(g, &m, sound_label, .Sound_Toggle)
+			add(g, &m, "Crew", .Open, int(Sub.Crew))
 			add(g, &m, "Back to title", .To_Title)
 		case .Heading:
 			for p in 0 ..< 8 {addf(g, &m, .Set_Heading, p * 45, "%s %03d", compass(p * 45), p * 45)}
@@ -380,16 +424,58 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			add(g, &m, "Back", .Back)
 		case .Chart:
 			add(g, &m, "Price book", .Open, int(Sub.Book))
+			add(g, &m, "Captain's log", .Open, int(Sub.Logbook))
 			add(g, &m, "Back", .Back)
+		case .Logbook:
+			if logbook_pages(g) > 1 {addf(g, &m, .Log_Page, 0, "Page %d of %d", g.log_page % logbook_pages(g) + 1, logbook_pages(g))}
+			add(g, &m, "Back", .Back)
+		case .Crew, .Member, .Tavern, .Candidate:
+			crew_menu(g, &m)
 		case .Book:
 			add(g, &m, "Next good", .Book_Step, 1)
 			add(g, &m, "Previous good", .Book_Step, -1)
 			add(g, &m, "Back", .Back)
-		case .Careen, .Market, .Trade, .Deliveries, .Offer, .Carried, .Carried_Detail, .Vendor, .Alley:
+		case .Careen, .Market, .Trade, .Deliveries, .Offer, .Carried, .Carried_Detail, .Vendor, .Alley, .Custom:
 			add(g, &m, "Back", .Back)
 		}
 	}
 	return
+}
+
+// The crew, member, tavern and candidate submenus, at sea or docked.
+crew_menu :: proc(g: ^Game, m: ^Menu) {
+	put :: proc(g: ^Game, m: ^Menu, cmd: Cmd, arg: int, label: string) {
+		assert(m.n < MENU_MAX, "menu overflow")
+		m.items[m.n] = {label, cmd, arg}
+		m.n += 1
+	}
+	nb: [NAME_LEN]u8
+	#partial switch g.sub {
+	case .Crew:
+		for k in 0 ..< g.n_crew {
+			c := g.crew[k]
+			name := member_name(c, nb[:])
+			label := k == 0 ? fmt.bprintf(g.menu_text[m.n][:], "Capt. %s", name) : fmt.bprintf(g.menu_text[m.n][:], "%s, %s", name, PROFESSION_NAMES[c.profession])
+			put(g, m, .Pick_Member, k, label)
+		}
+		if g.screen == .Sea {put(g, m, .Fish, 0, fmt.bprintf(g.menu_text[m.n][:], "Fish (%d turns)", FISH_TURNS))}
+	case .Member:
+		if g.screen == .Docked && g.pick >= 1 && g.pick < g.n_crew {put(g, m, .Dismiss, 0, "Pay off and dismiss")}
+	case .Tavern:
+		for k in 0 ..< g.n_candidates {
+			c := g.candidates[k]
+			put(g, m, .Pick_Candidate, k, fmt.bprintf(g.menu_text[m.n][:], "%s, %s %d", member_name(c, nb[:]), PROFESSION_NAMES[c.profession], c.wage))
+		}
+	case .Candidate:
+		if g.pick < g.n_candidates {put(g, m, .Hire, 0, fmt.bprintf(g.menu_text[m.n][:], "Hire (wage %d)", g.candidates[g.pick].wage))}
+	}
+	put(g, m, .Back, 0, "Back")
+}
+
+points_left :: proc(g: ^Game) -> int {
+	n := SKILL_POINTS
+	for s in Skill {n -= g.spent[s]}
+	return n
 }
 
 any_charted :: proc(g: ^Game) -> bool {
@@ -448,6 +534,8 @@ click :: proc(g: ^Game, x, y: int) {
 open :: proc(g: ^Game, s: Sub) {
 	if g.sub == .Alley && s != .Alley {fold(g)} // leaving the table folds the hand
 	if s == .Head_For && g.sub != .Head_For {g.page = 0}
+	if s == .Logbook && g.sub != .Logbook {g.log_page = 0}
+	if s == .Custom && g.sub != .Custom {g.spent = {}}
 	g.sub = s
 	g.cursor = 0
 }
@@ -456,20 +544,86 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 	sound(g, .Select)
 	switch cmd {
 	case .New_Voyage:
-		start_world(g, g.next_seed)
-		g.next_seed = rng_next(&g.rng)
-		g.turn = 0
-		g.screen = g.docked == NO_ISLAND ? .Sea : .Docked
+		// Choose a captain first; the voyage (and the world) only starts with Begin, so backing out keeps the old one.
+		g.screen = .Start
 		g.sub = .None
-		g.has_voyage = true
-		g.new_best = false
 		g.cursor = 0
-		if g.docked != NO_ISLAND {
-			logf(g, "Home port: %s.", island_name(g, g.docked))
+		g.spent = {}
+	case .Begin:
+		if g.screen != .Start {return}
+		if arg == QUICK {
+			r := rng_make(g.next_seed ~ 0x0C_1C_C5_7A)
+			p := Profession(rng_below(&r, 4))
+			begin_voyage(g, p, profession_skills(p))
+		} else if arg == int(Profession.Custom) {
+			if g.sub != .Custom {
+				open(g, .Custom)
+				return
+			}
+			skills := BASE_SKILL
+			for s in Skill {skills[s] += g.spent[s]}
+			begin_voyage(g, .Custom, skills)
+		} else if arg >= 0 && arg < int(Profession.Custom) {
+			begin_voyage(g, Profession(arg), profession_skills(Profession(arg)))
 		} else {
-			logf(g, "A new voyage begins.")
+			return
+		}
+		nb: [NAME_LEN]u8
+		logf(g, "%s takes command.", member_name(g.crew[0], nb[:]))
+	case .Spend:
+		if g.sub != .Custom || arg < 0 || arg > int(max(Skill)) {return}
+		s := Skill(arg)
+		if points_left(g) < SKILL_STEP || BASE_SKILL[s] + g.spent[s] + SKILL_STEP > SKILL_CAP {
+			sound(g, .Deny)
+			return
+		}
+		g.spent[s] += SKILL_STEP
+	case .Pick_Member:
+		if arg < 0 || arg >= g.n_crew {return}
+		g.pick = arg
+		open(g, .Member)
+	case .Dismiss:
+		if g.sub != .Member {return}
+		nb: [NAME_LEN]u8
+		name := member_name(g.crew[g.pick], nb[:])
+		if !dismiss(g, g.pick) {
+			sound(g, .Deny)
+			return
+		}
+		logf(g, "%s goes ashore.", name)
+		open(g, .Crew)
+		g.want_save = true
+	case .Fish:
+		if g.screen != .Sea || g.sub != .Crew {return}
+		n := fish(g)
+		if g.screen == .Sea {
+			if n > 0 {
+				logf(g, "Caught %d rations.", n)
+			} else {
+				logf(g, "Nothing biting.")
+			}
+			sound(g, .Bell)
 		}
 		g.want_save = true
+	case .Pick_Candidate:
+		if g.screen != .Docked || arg < 0 || arg >= g.n_candidates {return}
+		g.pick = arg
+		open(g, .Candidate)
+	case .Hire:
+		if g.sub != .Candidate {return}
+		c := g.candidates[g.pick]
+		if !hire(g, g.pick) {
+			sound(g, .Deny)
+			logf(g, "No room: %d aboard.", CREW_MAX)
+			return
+		}
+		nb: [NAME_LEN]u8
+		logf(g, "%s signs on.", member_name(c, nb[:]))
+		open(g, .Tavern)
+		g.want_save = true
+	case .Log_Page:
+		g.log_page += 1
+		g.cursor = 0
 	case .Continue:
 		if !g.has_voyage {return}
 		g.screen = g.docked == NO_ISLAND ? .Sea : .Docked
@@ -489,7 +643,9 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		case .Trade: open(g, .Market)
 		case .Offer, .Carried: open(g, .Deliveries)
 		case .Carried_Detail: open(g, .Carried)
-		case .Book: open(g, .Chart)
+		case .Book, .Logbook: open(g, .Chart)
+		case .Member: open(g, .Crew)
+		case .Candidate: open(g, .Tavern)
 		case: open(g, .None)
 		}
 	case .Set_Heading:
@@ -543,11 +699,15 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		open(g, .None)
 		sound(g, .Dock)
 		logf(g, "Docked at %s.", island_name(g, target))
+		if g.seen[target].turn == NEVER_SEEN {note(g, .Landfall, target, 0)}
 		if done, paid := complete_deliveries(g); done > 0 {
 			sound(g, .Coins)
 			logf(g, "Delivered %d: paid %d.", done, paid)
+			note(g, .Delivered, target, paid)
 		}
+		if w := settle_crew(g); w > 0 {logf(g, "Wages paid: %d.", w)}
 		make_offers(g)
+		make_candidates(g)
 		record_prices(g)
 		g.vendor_stock = VENDOR_STOCK
 		g.want_save = true
@@ -586,6 +746,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		if n > 0 {
 			sound(g, .Coins)
 			logf(g, "Sold %d for %d.", n, takings)
+			if takings >= BIG_SALE {note(g, .Sold, g.docked, takings)}
 			record_prices(g)
 			g.want_save = true
 		} else {
@@ -649,7 +810,9 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 			return
 		}
 		sound(g, g.hand_won ? .Win : .Bust)
+		if g.palmed {logf(g, "A card is swapped...")}
 		logf(g, g.hand_won ? "Between! Won %d." : "Not between: lost %d.", g.bet)
+		if g.hand_won && g.bet >= BIG_WIN {note(g, .Won, g.docked, g.bet)}
 		g.cursor = 0
 		g.want_save = true
 	case .Fold:
@@ -663,6 +826,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		if g.docked != NO_ISLAND {logf(g, "Cast off from %s.", island_name(g, g.docked))}
 		g.docked = NO_ISLAND
 		g.n_offers = 0 // offers stay at the island
+		g.n_candidates = 0 // and so do the sailors at the tavern
 		g.screen = .Sea
 		open(g, .None)
 		g.want_save = true

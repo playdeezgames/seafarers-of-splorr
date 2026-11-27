@@ -159,7 +159,7 @@ look :: proc(g: ^Game) -> int {
 	sighted := NO_ISLAND
 	for i in 0 ..< g.n_islands {
 		if g.islands[i].charted {continue}
-		if island_distance(g, i, g.ship.x, g.ship.y) <= VIEW_DISTANCE {
+		if island_distance(g, i, g.ship.x, g.ship.y) <= view_distance(g) {
 			g.islands[i].charted = true
 			sighted = i
 		}

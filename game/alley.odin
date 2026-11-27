@@ -80,6 +80,18 @@ place_bet :: proc(g: ^Game, times: int) -> bool {
 	if times < 1 || times > BET_STEPS[len(BET_STEPS) - 1] || amount > g.money {return false}
 	g.bet = amount
 	g.hand_won = in_between(g.hand[0], g.hand[1], g.hand[2])
+	g.palmed = false
+	// A gamer aboard may swap a losing third card for another (Phase 6, the Gaming skill). A pair still loses.
+	if !g.hand_won && !is_pair(g.hand[0], g.hand[1]) {
+		if chance := gaming_chance(g); chance > 0 && rng_below(&g.rng, 100) < chance {
+			for {
+				g.hand[2] = rng_below(&g.rng, DECK_SIZE)
+				if g.hand[2] != g.hand[0] && g.hand[2] != g.hand[1] {break}
+			}
+			g.palmed = true
+			g.hand_won = in_between(g.hand[0], g.hand[1], g.hand[2])
+		}
+	}
 	g.money = g.hand_won ? min(g.money + amount, MONEY_MAX) : g.money - amount
 	g.hand_state = .Shown
 	return true

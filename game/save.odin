@@ -6,6 +6,15 @@ import "core:math"
 // world is rebuilt from the seed, so a new generator makes an old save describe a different sea). An older version is
 // refused with Load_Error.Version and the page says so.
 //
+// Version 7 (Phase 6, crew) is version 6 followed by:
+//  u8, 7 x member     the crew: count (1 ..= 7, the captain first), then seven slots
+//  u8, 3 x member     sailors at the docked island's tavern: count, then three slots
+//  u16                turns since wages were paid
+//  u8, 64 x entry     the captain's log: count, then 64 slots
+// A member is 15 bytes: name seed u32, profession u8, eight skills u8, hit points u8 (the captain's is the health
+// above), wage u8. A log entry is 8 bytes: turn u16, kind u8, island u8 (255 at sea), value u32.
+// Older versions load with a captain of base skills and no crew (so nothing changes for them), and an empty log.
+//
 // Version 6 (the price book) is version 5 followed by, for each of the 40 island slots: the turn its prices were
 // last seen (u16, 0xFFFF for never) and the price it asked for each of the 12 goods (u16, 0 if it does not trade it).
 // Older versions load with an empty book (the docked island's prices are recorded on load).
@@ -45,10 +54,13 @@ import "core:math"
 // 34  u8     speed (percent)
 // 35  u8     docked island, 255 at sea
 // 36  u64    charted islands, bit i for island i
-SAVE_VERSION :: 6
+SAVE_VERSION :: 7
 SAVE_V4_SIZE :: 82 + ISLAND_MAX * len(Commodity) * 4
 SAVE_V5_SIZE :: SAVE_V4_SIZE + 2 * (1 + 12 * 3) + 1 + 2
-SAVE_SIZE :: SAVE_V5_SIZE + ISLAND_MAX * (2 + 2 * len(Good))
+SAVE_V6_SIZE :: SAVE_V5_SIZE + ISLAND_MAX * (2 + 2 * len(Good))
+MEMBER_BYTES :: 15
+ENTRY_BYTES :: 8
+SAVE_SIZE :: SAVE_V6_SIZE + 1 + CREW_MAX * MEMBER_BYTES + 1 + CANDIDATES_MAX * MEMBER_BYTES + 2 + 1 + LOGBOOK_MAX * ENTRY_BYTES
 NOT_SEEN :: 0xFFFF
 PRICE_MAX :: 60_000
 SAVE_V3_SIZE :: 58
@@ -101,6 +113,28 @@ save_encode :: proc(g: ^Game, buf: ^[SAVE_SIZE]u8) {
 		for good in Good {put_u16(buf[at6 + 2 + 2 * int(good):], u16(clamp(seen.price[good], 0, PRICE_MAX)))}
 		at6 += 2 + 2 * len(Good)
 	}
+	at7 := SAVE_V6_SIZE
+	buf[at7] = u8(g.n_crew)
+	for k in 0 ..< g.n_crew {
+		m := g.crew[k]
+		if k == 0 {m.hp = g.health}
+		put_member(buf[at7 + 1 + MEMBER_BYTES * k:], m)
+	}
+	at7 += 1 + CREW_MAX * MEMBER_BYTES
+	buf[at7] = u8(g.n_candidates)
+	for k in 0 ..< g.n_candidates {put_member(buf[at7 + 1 + MEMBER_BYTES * k:], g.candidates[k])}
+	at7 += 1 + CANDIDATES_MAX * MEMBER_BYTES
+	put_u16(buf[at7:], u16(g.wage_turns))
+	at7 += 2
+	buf[at7] = u8(g.n_logbook)
+	for k in 0 ..< g.n_logbook {
+		e := g.logbook[k]
+		o := buf[at7 + 1 + ENTRY_BYTES * k:]
+		put_u16(o, u16(e.turn))
+		o[2] = u8(e.kind)
+		o[3] = e.island == NO_ISLAND ? NOT_DOCKED : u8(e.island)
+		put_u32(o[4:], u32(e.value))
+	}
 	at := 82
 	for i in 0 ..< ISLAND_MAX {
 		for c in Commodity {
@@ -117,7 +151,7 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 	if data[0] != 'S' || data[1] != 'O' || data[2] != 'S' {return .Magic}
 	version := data[3]
 	if version < 2 || version > SAVE_VERSION {return .Version} // before the size: versions differ in size
-	sizes := [7]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_V4_SIZE, SAVE_V5_SIZE, SAVE_SIZE}
+	sizes := [8]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_V4_SIZE, SAVE_V5_SIZE, SAVE_V6_SIZE, SAVE_SIZE}
 	if len(data) != sizes[version] {return .Size}
 	turn := get_u32(data[20:])
 	turn_saved := turn
@@ -188,6 +222,46 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 			at += 2 + 2 * len(Good)
 		}
 	}
+	if version >= 7 {
+		at := SAVE_V6_SIZE
+		n := int(data[at])
+		if n < 1 || n > CREW_MAX {return .Range}
+		for k in 0 ..< n {
+			m, ok := get_member(data[at + 1 + MEMBER_BYTES * k:])
+			if !ok {return .Range}
+			if k == 0 {m.hp, m.wage = STAT_MAX, 0}
+			t.crew[k] = m
+		}
+		t.n_crew = n
+		at += 1 + CREW_MAX * MEMBER_BYTES
+		n = int(data[at])
+		if n > CANDIDATES_MAX {return .Range}
+		if n > 0 && (t.docked == NO_ISLAND || .Tavern not_in t.districts[t.docked]) {return .Range}
+		for k in 0 ..< n {
+			m, ok := get_member(data[at + 1 + MEMBER_BYTES * k:])
+			if !ok {return .Range}
+			t.candidates[k] = m
+		}
+		t.n_candidates = n
+		at += 1 + CANDIDATES_MAX * MEMBER_BYTES
+		t.wage_turns = int(get_u16(data[at:]))
+		if t.wage_turns > TURN_LIMIT {return .Range}
+		at += 2
+		n = int(data[at])
+		if n > LOGBOOK_MAX {return .Range}
+		for k in 0 ..< n {
+			o := data[at + 1 + ENTRY_BYTES * k:]
+			e := Log_Entry {
+				turn   = int(get_u16(o)),
+				island = o[3] == NOT_DOCKED ? NO_ISLAND : int(o[3]),
+				value  = int(get_u32(o[4:])),
+			}
+			if e.turn > int(turn_saved) || o[2] > u8(max(Log_Kind)) || (e.island != NO_ISLAND && e.island >= t.n_islands) {return .Range}
+			e.kind = Log_Kind(o[2])
+			t.logbook[k] = e
+		}
+		t.n_logbook = n
+	}
 	if version < 4 {
 		t.money = START_MONEY
 	} else {
@@ -250,6 +324,27 @@ get_u32 :: proc(b: []u8) -> (v: u32) {
 get_u64 :: proc(b: []u8) -> (v: u64) {
 	for i in 0 ..< 8 {v |= u64(b[i]) << (8 * uint(i))}
 	return
+}
+
+put_member :: proc(b: []u8, m: Member) {
+	put_u32(b, m.name_seed)
+	b[4] = u8(m.profession)
+	for s in Skill {b[5 + int(s)] = u8(m.skills[s])}
+	b[13] = u8(m.hp)
+	b[14] = u8(m.wage)
+}
+
+get_member :: proc(b: []u8) -> (m: Member, ok: bool) {
+	m.name_seed = get_u32(b)
+	if b[4] > u8(max(Profession)) {return}
+	m.profession = Profession(b[4])
+	for s in Skill {
+		if b[5 + int(s)] > 100 {return}
+		m.skills[s] = int(b[5 + int(s)])
+	}
+	m.hp, m.wage = int(b[13]), int(b[14])
+	if m.hp < 1 || m.hp > STAT_MAX || m.wage > WAGE_MAX {return}
+	return m, true
 }
 
 put_deliveries :: proc(b: []u8, ds: []Delivery) {

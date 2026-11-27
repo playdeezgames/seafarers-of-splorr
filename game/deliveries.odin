@@ -11,12 +11,14 @@ District :: enum u8 {
 	Delivery_Service,
 	Street_Vendor,
 	Dark_Alley,
+	Tavern, // Phase 6: sailors for hire; rolled from its own stream so older worlds keep their districts
 }
 
 DISTRICT_CHANCE := [District]int {
 	.Delivery_Service = 70,
 	.Street_Vendor    = 60,
 	.Dark_Alley       = 40,
+	.Tavern           = TAVERN_CHANCE,
 }
 
 CARRY_MAX :: 3
@@ -47,8 +49,13 @@ generate_districts :: proc(g: ^Game) {
 	for i in 0 ..< g.n_islands {
 		g.districts[i] = {}
 		for d in District {
+			if d == .Tavern {continue}
 			if rng_below(&r, 100) < DISTRICT_CHANCE[d] {g.districts[i] += {d}}
 		}
+	}
+	t := rng_make(g.seed ~ 0x7A_BE_42_17)
+	for i in 0 ..< g.n_islands {
+		if rng_below(&t, 100) < DISTRICT_CHANCE[.Tavern] {g.districts[i] += {.Tavern}}
 	}
 }
 

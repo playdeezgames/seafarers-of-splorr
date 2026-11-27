@@ -24,7 +24,7 @@ Outcome :: enum u8 {
 // The ship's speed after fouling, in percent of full sail.
 effective_speed :: proc(g: ^Game) -> f32 {
 	foul := f32(g.foul[.Port] + g.foul[.Starboard]) / 10000
-	return f32(g.ship.speed) * (1 - foul)
+	return f32(g.ship.speed) * (1 - foul) * speed_factor(g)
 }
 
 // How clean one side of the hull is, 0 ..= 100 percent.
@@ -32,21 +32,29 @@ hull_clean :: proc(g: ^Game, s: Side) -> int {
 	return 100 - g.foul[s] * 100 / FOUL_MAX
 }
 
-// One turn passes: everyone eats, the hull fouls if under way, and the voyage may end. Returns false when it ended.
+// One turn passes: everyone aboard eats a ration, the hull fouls if under way, wages mount, and the voyage may end.
+// Returns false when it ended.
 tick :: proc(g: ^Game, under_way: bool) -> bool {
-	if g.rations > 0 {
-		g.rations -= 1
+	eaters := max(g.n_crew, 1)
+	if g.rations >= eaters {
+		g.rations -= eaters
 		g.satiety = min(g.satiety + 1, STAT_MAX)
-	} else if g.satiety > 0 {
-		g.satiety -= 1
+	} else if g.rations > 0 || g.satiety > 0 {
+		g.rations = 0 // not enough to go round
+		g.satiety = max(g.satiety - 1, 0)
 	} else {
 		g.health = max(g.health - 1, 0)
+		crew_starve(g)
 	}
-	if g.satiety == STAT_MAX {g.health = min(g.health + 1, STAT_MAX)}
+	if g.satiety == STAT_MAX {
+		g.health = min(g.health + 1, STAT_MAX)
+		crew_recover(g)
+	}
 	drift_markets(g)
 	if under_way {
-		for s in Side {g.foul[s] = min(g.foul[s] + FOUL_PER_TURN, FOUL_MAX)}
+		for s in Side {g.foul[s] = min(g.foul[s] + foul_per_turn(g), FOUL_MAX)}
 	}
+	g.wage_turns = min(g.wage_turns + 1, TURN_LIMIT)
 	g.turn += 1
 	if g.rations == 0 && g.satiety == 0 && g.health > 0 && g.health % 20 == 0 {
 		logf(g, "Starving! Health %d.", g.health)
@@ -78,6 +86,7 @@ end_voyage :: proc(g: ^Game, o: Outcome) {
 	g.docked = NO_ISLAND
 	g.want_save = true // the page clears the stored voyage
 	g.new_best = false
+	g.log_page = 0
 	switch o {
 	case .Retired:
 		sound(g, .Retire)
@@ -105,7 +114,7 @@ careen :: proc(g: ^Game, s: Side) {
 		logf(g, "No beach to careen on.")
 		return
 	}
-	for _ in 0 ..< CAREEN_TURNS {
+	for _ in 0 ..< careen_turns(g) {
 		if !tick(g, false) {return}
 	}
 	g.foul[s] = 0

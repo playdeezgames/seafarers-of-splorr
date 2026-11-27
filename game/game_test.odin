@@ -98,7 +98,7 @@ voyage_starts_docked_at_home :: proc(t: ^testing.T) {
 	g := new(Game)
 	defer free(g)
 	title(g, 99)
-	do_cmd(g, .New_Voyage, 0)
+	voyage(g)
 	testing.expect_value(t, g.seed, 99)
 	testing.expect_value(t, g.screen, Screen.Docked)
 	testing.expect_value(t, g.docked, 0)
@@ -116,8 +116,8 @@ seed_picks_the_first_voyage :: proc(t: ^testing.T) {
 	defer {free(g); free(h)}
 	title(g, 99)
 	title(h, 99)
-	do_cmd(g, .New_Voyage, 0)
-	do_cmd(h, .New_Voyage, 0)
+	voyage(g)
+	voyage(h)
 	testing.expect(t, g.next_seed != 99)
 	testing.expect_value(t, g.next_seed, h.next_seed)
 }
@@ -135,7 +135,7 @@ headings_wrap_and_name :: proc(t: ^testing.T) {
 // A game on open water: no islands, the ship mid-map.
 open_sea :: proc(g: ^Game) {
 	title(g, 5)
-	do_cmd(g, .New_Voyage, 0)
+	voyage(g)
 	g.land = {}
 	g.n_islands = 0
 	g.docked = NO_ISLAND
@@ -273,7 +273,11 @@ menus_and_head_for_list :: proc(t: ^testing.T) {
 	input(g, .Up)
 	testing.expect_value(t, g.cursor, 1)
 	click(g, PANEL_X + 5, MENU_Y) // first line
+	testing.expect_value(t, g.screen, Screen.Start) // choose a captain first
+	choose(g, 2) // Sailor
 	testing.expect_value(t, g.screen, Screen.Docked)
+	testing.expect_value(t, g.crew[0].profession, Profession.Sailor)
+	testing.expect_value(t, g.n_crew, 1 + START_CREW)
 	do_cmd(g, .Undock, 0)
 	m := menu(g)
 	testing.expect(t, m.n <= MENU_MAX)
@@ -300,7 +304,7 @@ every_menu_fits :: proc(t: ^testing.T) {
 	g := new(Game)
 	defer free(g)
 	title(g, 11)
-	do_cmd(g, .New_Voyage, 0)
+	voyage(g)
 	do_cmd(g, .Undock, 0)
 	for i in 0 ..< g.n_islands {g.islands[i].charted = true}
 	// Alongside an island (dock in range) every sea menu still fits; add() asserts on overflow.
@@ -334,7 +338,7 @@ save_round_trips :: proc(t: ^testing.T) {
 	g := new(Game)
 	defer free(g)
 	title(g, 1234)
-	do_cmd(g, .New_Voyage, 0)
+	voyage(g)
 	do_cmd(g, .Undock, 0)
 	do_cmd(g, .Set_Heading, 135)
 	do_cmd(g, .Sail, 25)
@@ -358,7 +362,7 @@ save_round_trips :: proc(t: ^testing.T) {
 
 	// Docked saves round-trip too.
 	title(g, 1234)
-	do_cmd(g, .New_Voyage, 0)
+	voyage(g)
 	save_encode(g, &buf)
 	testing.expect_value(t, save_decode(h, buf[:]), Load_Error.None)
 	testing.expect_value(t, h.docked, 0)
@@ -371,7 +375,7 @@ save_rejects_bad_data :: proc(t: ^testing.T) {
 	g := new(Game)
 	defer free(g)
 	title(g, 1)
-	do_cmd(g, .New_Voyage, 0)
+	voyage(g)
 	good: [SAVE_SIZE]u8
 	save_encode(g, &good)
 
@@ -466,6 +470,8 @@ starving_ends_the_voyage_as_a_loss :: proc(t: ^testing.T) {
 	testing.expect_value(t, g.best, 500)
 	testing.expect_value(t, menu(g).items[0].cmd, Cmd.New_Voyage)
 	choose(g, 0)
+	testing.expect_value(t, g.screen, Screen.Start)
+	choose(g, 0) // quick start
 	testing.expect_value(t, g.screen, Screen.Docked) // a fresh voyage, fed and healthy
 	testing.expect_value(t, g.health, STAT_MAX)
 	testing.expect_value(t, g.best, 500)
@@ -541,7 +547,7 @@ version_2_saves_load_with_starting_values :: proc(t: ^testing.T) {
 	g := new(Game)
 	defer free(g)
 	title(g, 1234)
-	do_cmd(g, .New_Voyage, 0)
+	voyage(g)
 	buf: [SAVE_SIZE]u8
 	save_encode(g, &buf)
 	buf[3] = 2
@@ -560,7 +566,7 @@ survival_fields_round_trip_and_are_checked :: proc(t: ^testing.T) {
 	g := new(Game)
 	defer free(g)
 	title(g, 77)
-	do_cmd(g, .New_Voyage, 0)
+	voyage(g)
 	g.money, g.rations, g.satiety, g.health = 321, 17, 40, 60
 	g.foul = {.Port = 1200, .Starboard = 30}
 	good: [SAVE_SIZE]u8
@@ -593,7 +599,7 @@ survival_fields_round_trip_and_are_checked :: proc(t: ^testing.T) {
 // Docked at the home port of a fresh voyage, with a known market: flour and timber traded, every commodity at 1.0.
 trading_post :: proc(g: ^Game) {
 	title(g, 21)
-	do_cmd(g, .New_Voyage, 0)
+	voyage(g)
 	g.trades[0] = {.Flour, .Timber, .Pepper}
 	for c in Commodity {
 		g.usual[0].supply[c], g.usual[0].demand[c] = 1000, 1000
@@ -628,7 +634,7 @@ islands_trade_two_to_six_goods :: proc(t: ^testing.T) {
 			}
 		}
 		// The market menu (goods, rations, back) always fits.
-		do_cmd(g, .New_Voyage, 0)
+		voyage(g)
 		do_cmd(g, .Open, int(Sub.Market))
 		testing.expect_value(t, menu(g).n, card(g.trades[0]) + 2)
 	}
@@ -774,7 +780,7 @@ trade_state_round_trips :: proc(t: ^testing.T) {
 // A fresh voyage whose home port has every district.
 busy_port :: proc(g: ^Game) {
 	title(g, 31)
-	do_cmd(g, .New_Voyage, 0)
+	voyage(g)
 	g.districts[0] = {.Delivery_Service, .Street_Vendor, .Dark_Alley}
 	make_offers(g)
 }
@@ -1020,7 +1026,7 @@ the_price_book_from_the_chart :: proc(t: ^testing.T) {
 	g := new(Game)
 	defer free(g)
 	title(g, 4)
-	do_cmd(g, .New_Voyage, 0)
+	voyage(g)
 	do_cmd(g, .Undock, 0)
 	do_cmd(g, .Open, int(Sub.Chart))
 	testing.expect_value(t, menu(g).items[0].arg, int(Sub.Book))
@@ -1091,7 +1097,7 @@ tarot_values_and_the_in_between_rule :: proc(t: ^testing.T) {
 // Docked at a home port with a dark alley at stake 10.
 alley :: proc(g: ^Game) {
 	title(g, 41)
-	do_cmd(g, .New_Voyage, 0)
+	voyage(g)
 	g.districts[0] = {.Dark_Alley}
 	g.stakes[0] = 10
 	do_cmd(g, .Open, int(Sub.Alley))
@@ -1170,7 +1176,7 @@ head_for_pages_when_many_are_charted :: proc(t: ^testing.T) {
 	g := new(Game)
 	defer free(g)
 	title(g, 13)
-	do_cmd(g, .New_Voyage, 0)
+	voyage(g)
 	do_cmd(g, .Undock, 0)
 	for i in 0 ..< g.n_islands {g.islands[i].charted = true}
 	n := g.n_islands
@@ -1209,4 +1215,343 @@ charted_nearest :: proc(g: ^Game) -> int {
 	out: [1]int
 	charted_by_distance(g, out[:])
 	return out[0]
+}
+
+// Starts a voyage the way Phases 1 to 5 did: a captain of base skills and no crew, so older tests keep their numbers.
+voyage :: proc(g: ^Game) {
+	do_cmd(g, .New_Voyage, 0)
+	begin_voyage(g, .Custom, BASE_SKILL, false)
+}
+
+// Phase 6: crew and professions.
+
+// Docked at a home port with a tavern, a captain of base skills and three crew.
+crewed :: proc(g: ^Game) {
+	title(g, 61)
+	do_cmd(g, .New_Voyage, 0)
+	begin_voyage(g, .Custom, BASE_SKILL)
+	g.districts[0] += {.Tavern}
+	make_candidates(g)
+}
+
+@(test)
+choosing_a_captain :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	title(g, 7)
+	voyage(g)
+	seed := g.seed
+	do_cmd(g, .To_Title, 0)
+	do_cmd(g, .New_Voyage, 0)
+	testing.expect_value(t, g.screen, Screen.Start)
+	testing.expect_value(t, menu(g).n, 7) // Quick start, four professions, Custom, Back
+	input(g, .Back) // backing out keeps the voyage
+	testing.expect_value(t, g.screen, Screen.Title)
+	testing.expect(t, g.has_voyage)
+	testing.expect_value(t, g.seed, seed)
+
+	for p in Profession.Hunter ..= Profession.Warrior {
+		title(g, 7)
+		do_cmd(g, .New_Voyage, 0)
+		do_cmd(g, .Begin, int(p))
+		testing.expect_value(t, g.screen, Screen.Docked)
+		testing.expect_value(t, g.crew[0].profession, p)
+		testing.expect(t, g.crew[0].skills == profession_skills(p))
+		testing.expect_value(t, g.crew[0].wage, 0)
+		testing.expect_value(t, g.n_crew, 1 + START_CREW)
+		total := 0
+		for s in Skill {total += g.crew[0].skills[s] - BASE_SKILL[s]}
+		testing.expect_value(t, total, SKILL_POINTS)
+	}
+
+	// A quick start is a profession chosen from the seed.
+	h := new(Game)
+	defer free(h)
+	title(g, 9)
+	title(h, 9)
+	do_cmd(g, .New_Voyage, 0)
+	do_cmd(h, .New_Voyage, 0)
+	do_cmd(g, .Begin, QUICK)
+	do_cmd(h, .Begin, QUICK)
+	testing.expect(t, g.crew == h.crew)
+	testing.expect(t, g.crew[0].profession != .Custom)
+}
+
+@(test)
+a_custom_captain_spends_points :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	title(g, 7)
+	do_cmd(g, .New_Voyage, 0)
+	do_cmd(g, .Open, int(Sub.Custom))
+	testing.expect_value(t, menu(g).n, len(Skill) + 1)
+	for _ in 0 ..< 20 {do_cmd(g, .Spend, int(Skill.Track))} // capped
+	testing.expect_value(t, BASE_SKILL[.Track] + g.spent[.Track], SKILL_CAP)
+	for _ in 0 ..< 20 {do_cmd(g, .Spend, int(Skill.Bargain))} // out of points
+	testing.expect_value(t, points_left(g), 0)
+	input(g, .Back) // back to the professions resets nothing until Custom is opened again
+	do_cmd(g, .Open, int(Sub.Custom))
+	testing.expect_value(t, points_left(g), SKILL_POINTS)
+	do_cmd(g, .Spend, int(Skill.Gaming))
+	do_cmd(g, .Begin, int(Profession.Custom))
+	testing.expect_value(t, g.screen, Screen.Docked)
+	testing.expect_value(t, g.crew[0].skills[.Gaming], BASE_SKILL[.Gaming] + SKILL_STEP)
+	testing.expect_value(t, g.crew[0].skills[.Track], BASE_SKILL[.Track])
+}
+
+@(test)
+names_are_stable_and_readable :: proc(t: ^testing.T) {
+	buf, again: [NAME_LEN]u8
+	r := rng_make(5)
+	for _ in 0 ..< 200 {
+		m := Member{name_seed = new_name_seed(&r)}
+		name := member_name(m, buf[:])
+		testing.expect(t, len(name) >= 3 && len(name) <= NAME_LEN)
+		testing.expect(t, name[0] >= 'A' && name[0] <= 'Z')
+		testing.expect_value(t, member_name(m, again[:]), name)
+	}
+}
+
+@(test)
+everyone_eats_and_crew_can_starve :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	crewed(g)
+	do_cmd(g, .Undock, 0)
+	do_cmd(g, .Set_Speed, 0)
+	rations := g.rations
+	do_cmd(g, .Sail, 1)
+	testing.expect_value(t, g.rations, rations - g.n_crew)
+
+	g.rations, g.satiety = 2, 1 // not enough to go round: nobody is fed
+	do_cmd(g, .Sail, 1)
+	testing.expect_value(t, g.rations, 0)
+	testing.expect_value(t, g.satiety, 0)
+	g.crew[1].hp = 2
+	do_cmd(g, .Sail, 2)
+	testing.expect_value(t, g.n_crew, START_CREW) // one died
+	testing.expect_value(t, g.screen, Screen.Sea) // the captain lives on
+	testing.expect_value(t, g.logbook[g.n_logbook - 1].kind, Log_Kind.Died)
+}
+
+@(test)
+wages_are_paid_on_docking :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	crewed(g)
+	w := wages(g)
+	testing.expect(t, w > 0)
+	do_cmd(g, .Undock, 0)
+	do_cmd(g, .Set_Speed, 0)
+	do_cmd(g, .Sail, 10)
+	testing.expect_value(t, g.wage_turns, 10)
+	money := g.money
+	do_cmd(g, .Dock, 0)
+	testing.expect_value(t, g.money, money - w)
+	testing.expect_value(t, g.wage_turns, 0)
+	testing.expect_value(t, g.n_crew, 1 + START_CREW)
+
+	// Whoever cannot be paid leaves.
+	do_cmd(g, .Undock, 0)
+	do_cmd(g, .Sail, 10)
+	g.money = g.crew[1].wage
+	do_cmd(g, .Dock, 0)
+	testing.expect_value(t, g.n_crew, 2)
+	testing.expect_value(t, g.money, 0)
+	testing.expect_value(t, g.logbook[g.n_logbook - 1].kind, Log_Kind.Deserted)
+}
+
+@(test)
+hiring_and_dismissing :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	crewed(g)
+	testing.expect_value(t, g.n_candidates, CANDIDATES_MAX)
+	m := menu(g)
+	found := false
+	for k in 0 ..< m.n {if m.items[k].cmd == .Open && m.items[k].arg == int(Sub.Tavern) {found = true}}
+	testing.expect(t, found)
+	do_cmd(g, .Open, int(Sub.Tavern))
+	testing.expect_value(t, menu(g).n, CANDIDATES_MAX + 1)
+	c := g.candidates[0]
+	do_cmd(g, .Pick_Candidate, 0)
+	do_cmd(g, .Hire, 0)
+	testing.expect_value(t, g.n_crew, 2 + START_CREW)
+	testing.expect(t, g.crew[g.n_crew - 1] == c)
+	testing.expect_value(t, g.n_candidates, CANDIDATES_MAX - 1)
+	testing.expect_value(t, g.sub, Sub.Tavern)
+	do_cmd(g, .Pick_Candidate, 0)
+	do_cmd(g, .Hire, 0)
+	do_cmd(g, .Pick_Candidate, 0)
+	do_cmd(g, .Hire, 0)
+	testing.expect_value(t, g.n_crew, CREW_MAX)
+	make_candidates(g)
+	testing.expect(t, !hire(g, 0)) // no room
+
+	// The captain cannot be dismissed, nor anyone at sea.
+	testing.expect(t, !dismiss(g, 0))
+	do_cmd(g, .Open, int(Sub.Crew))
+	testing.expect_value(t, menu(g).n, CREW_MAX + 1)
+	do_cmd(g, .Pick_Member, 2)
+	do_cmd(g, .Dismiss, 0)
+	testing.expect_value(t, g.n_crew, CREW_MAX - 1)
+	testing.expect_value(t, g.sub, Sub.Crew)
+	do_cmd(g, .Back, 0)
+	do_cmd(g, .Undock, 0)
+	testing.expect_value(t, g.n_candidates, 0) // they stay at the tavern
+	testing.expect(t, !dismiss(g, 1))
+	do_cmd(g, .Open, int(Sub.Crew))
+	testing.expect_value(t, menu(g).n, CREW_MAX + 1) // six aboard, Fish, Back
+	do_cmd(g, .Pick_Member, 1)
+	testing.expect_value(t, menu(g).n, 1) // just Back
+}
+
+@(test)
+skills_change_the_ship :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	title(g, 5)
+	// Base skills change nothing.
+	testing.expect_value(t, speed_factor(g), 1)
+	testing.expect_value(t, foul_per_turn(g), FOUL_PER_TURN)
+	testing.expect_value(t, view_distance(g), VIEW_DISTANCE)
+	testing.expect_value(t, careen_turns(g), CAREEN_TURNS)
+	testing.expect_value(t, bargain_percent(g), 0)
+	testing.expect_value(t, gaming_chance(g), 0)
+	// The best aboard counts.
+	g.crew[1] = {skills = BASE_SKILL, hp = STAT_MAX}
+	g.n_crew = 2
+	for s in Skill {g.crew[1].skills[s] = 100}
+	testing.expect(t, near(speed_factor(g), 1.2))
+	testing.expect_value(t, foul_per_turn(g), 3)
+	testing.expect_value(t, view_distance(g), VIEW_DISTANCE + 3)
+	testing.expect_value(t, careen_turns(g), 5)
+	testing.expect_value(t, bargain_percent(g), 4)
+	testing.expect_value(t, gaming_chance(g), 30)
+	// Bargaining never lets you buy and sell at a profit in one port.
+	for i in 0 ..< g.n_islands {
+		for good in Good {testing.expect(t, your_take(g, i, good) <= your_cost(g, i, good))}
+	}
+}
+
+@(test)
+fishing_feeds_the_crew :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	g.crew[0].skills[.Track] = 100
+	g.rations = 0
+	g.satiety = 50
+	turn := g.turn
+	do_cmd(g, .Open, int(Sub.Crew))
+	do_cmd(g, .Fish, 0)
+	testing.expect_value(t, g.turn, turn + FISH_TURNS)
+	testing.expect(t, g.rations > 0) // every cast lands something
+	testing.expect(t, near(g.ship.x, 60.5)) // hove to
+}
+
+@(test)
+a_gamer_swaps_losing_cards :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	alley(g)
+	g.crew[0].skills[.Gaming] = 100
+	swaps := 0
+	for _ in 0 ..< 400 {
+		g.money = 1000
+		do_cmd(g, .Deal, 0)
+		pair := is_pair(g.hand[0], g.hand[1])
+		do_cmd(g, .Bet, 1)
+		if g.palmed {
+			swaps += 1
+			testing.expect(t, !pair)
+		}
+	}
+	testing.expect(t, swaps > 20 && swaps < 200)
+}
+
+@(test)
+the_captains_log :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	crewed(g)
+	testing.expect_value(t, g.n_logbook, 1)
+	testing.expect_value(t, g.logbook[0].kind, Log_Kind.Began)
+	buf: [64]u8
+	want: [64]u8
+	testing.expect_value(t, logbook_text(g, g.logbook[0], buf[:]), bprint(want[:], "0: Sailed from ", island_name(g, 0), "."))
+	other := 1
+	x, y, ok := mooring(g, other)
+	testing.expect(t, ok)
+	do_cmd(g, .Undock, 0)
+	g.ship.x, g.ship.y = x, y
+	g.islands[other].charted = true
+	do_cmd(g, .Dock, other)
+	testing.expect_value(t, g.docked, other)
+	testing.expect_value(t, g.logbook[g.n_logbook - 1].kind, Log_Kind.Landfall)
+	n := g.n_logbook
+	do_cmd(g, .Undock, 0)
+	do_cmd(g, .Dock, other)
+	testing.expect_value(t, g.n_logbook, n) // only the first time
+	for k in 0 ..< 100 {
+		g.turn = k
+		note(g, .Sold, 0, k)
+	}
+	testing.expect_value(t, g.n_logbook, LOGBOOK_MAX)
+	testing.expect_value(t, g.logbook[0].kind, Log_Kind.Began) // the first entry stays
+	testing.expect_value(t, g.logbook[LOGBOOK_MAX - 1].value, 99)
+	testing.expect_value(t, logbook_pages(g), 5)
+	do_cmd(g, .Undock, 0)
+	do_cmd(g, .Open, int(Sub.Chart))
+	do_cmd(g, .Open, int(Sub.Logbook))
+	testing.expect_value(t, menu(g).items[0].cmd, Cmd.Log_Page)
+}
+
+@(test)
+crew_state_round_trips :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	crewed(g)
+	g.crew[2].hp = 40
+	g.wage_turns = 17
+	g.turn = 20
+	note(g, .Sold, 0, 777)
+	note(g, .Died, NO_ISLAND, int(g.crew[3].name_seed))
+	good: [SAVE_SIZE]u8
+	save_encode(g, &good)
+	h := new(Game)
+	defer free(h)
+	title(h, 3)
+	testing.expect_value(t, save_decode(h, good[:]), Load_Error.None)
+	testing.expect_value(t, h.n_crew, g.n_crew)
+	testing.expect(t, h.crew == g.crew)
+	testing.expect_value(t, h.n_candidates, g.n_candidates)
+	testing.expect(t, h.candidates == g.candidates)
+	testing.expect_value(t, h.wage_turns, 17)
+	testing.expect_value(t, h.n_logbook, g.n_logbook)
+	testing.expect(t, h.logbook == g.logbook)
+
+	at := SAVE_V6_SIZE
+	title(h, 3)
+	bad := good
+	bad[at] = 0 // no captain
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = good
+	bad[at + 1 + 5] = 101 // a skill past 100
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = good
+	bad[at + 1 + MEMBER_BYTES + 13] = 0 // a dead crew member aboard
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = good
+	bad[at + 1 + CREW_MAX * MEMBER_BYTES + 1 + CANDIDATES_MAX * MEMBER_BYTES + 2 + 1 + 2] = 200 // a kind of entry that does not exist
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	testing.expect(t, !h.has_voyage)
+
+	// A Phase 5 save gets a plain captain and no crew, so it plays on as before.
+	v6 := good
+	v6[3] = 6
+	testing.expect_value(t, save_decode(h, v6[:SAVE_V6_SIZE]), Load_Error.None)
+	testing.expect_value(t, h.n_crew, 1)
+	testing.expect(t, h.crew[0].skills == BASE_SKILL)
+	testing.expect_value(t, h.n_logbook, 0)
 }

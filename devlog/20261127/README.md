@@ -102,3 +102,24 @@ Not posted. A working record.
 - **Head for paging** (the user's report: with more charted islands than the menu holds, the far ones could not be
   chosen): when they do not fit, seven a page, nearest first, with "More (page n of m)".
 - 51 native tests. No save change (the hand is never saved; stakes come from the seed).
+
+## Phase 6, crew and professions; the captain's log (same day)
+
+- **Start choice:** New voyage now asks for a captain: a quick start (a profession chosen from the seed), Hunter,
+  Sailor, Thief, Warrior, or Custom (spend 120 points, ten at a time, no skill past 90). Backing out keeps the voyage
+  you had.
+- **Eight percentile skills** (the user's pick, drawn from the C++ game's Basic Roleplaying list): Navigate (up to 20%
+  faster), Pilot (slower fouling), Repair (careening in as few as 5 turns), Spot (see up to 3 leagues farther), Track
+  (fishing at sea: five turns hove to), Bargain (up to 4% better prices), Gaming (a chance to swap a losing third card
+  in the alley), Melee (fights, from Phase 8). The best skill aboard counts. Every effect starts above the base level,
+  so a captain of base skills plays exactly as before.
+- **Crew:** the captain and three to start, up to seven aboard. Everyone eats a ration a turn. In a famine the crew
+  lose health with the captain and can die; the voyage ends only with the captain.
+- **Wages and taverns:** a new tavern district (half the islands, rolled from its own stream so older worlds keep their
+  districts) offers three sailors for hire. Wages mount per ten turns at sea and are paid on docking; whoever cannot be
+  paid leaves, and a hungry crew may desert. Crew can be paid off in port.
+- **The captain's log** (from the Features list): first landfalls, deliveries, hires, deaths and desertions, big alley
+  wins and big sales, shown on the retirement screen and from Chart → Captain's log, fourteen to a page.
+- To make room, Sound left the sea and docked menus (it stays on the title and the M key); Crew took its place.
+- Save version 7 (2,826 bytes: crew, sailors for hire, wages owed, the log). Older saves get a captain of base skills
+  and no crew, so they play on unchanged. 62 native tests.
