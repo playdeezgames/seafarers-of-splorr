@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Seafarers of SPLORR!!</title>
+<link rel="icon" href="data:,">
 <style>
   html, body { margin: 0; height: 100%; background: #0a1220; color: #6a7a90; font: 12px/1.4 monospace; }
   body { display: flex; flex-direction: column; align-items: center; justify-content: center; }
@@ -136,6 +137,8 @@
     { wave: "triangle", notes: [[440, 0.03]] },                 // Move
     { wave: "square", notes: [[523, 0.04], [659, 0.06]] },      // Select
     { wave: "square", notes: [[196, 0.08], [147, 0.1]] },       // Deny
+    { wave: "triangle", notes: [[659, 0.08], [784, 0.08], [988, 0.14]] }, // Sighted
+    { wave: "triangle", notes: [[392, 0.06], [294, 0.12]] },    // Dock
   ];
   let muted = store.get(MUTE_KEY) === "1";
   let audio = null;

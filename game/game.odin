@@ -11,19 +11,29 @@ VIEW_TILES :: 24 // the sea view is 24 by 24 tiles on the left
 PANEL_X :: 240 // the menu panel fills the rest
 LINE :: 14 // m6x11 line height
 MENU_Y :: 64 // baseline of the first menu line
-MENU_MAX :: 7
+MENU_MAX :: 9 // number keys 1 to 9
+MENU_TEXT :: 24
 LOG_LINES :: 4
 LOG_Y :: LOGICAL_H - 4 - (LOG_LINES - 1) * LINE // baseline of the oldest log line
 LOG_LEN :: 40
-
-WORLD_SIZE :: 100 // world is WORLD_SIZE by WORLD_SIZE tiles (a placeholder until phase 1)
-ISLAND_MAX :: 40
-ISLAND_GAP :: 8 // Classic's minimum distance between islands
 TURN_MAX :: 1_000_000
 
 Screen :: enum u8 {
 	Title,
 	Sea,
+	Docked,
+}
+
+// A submenu open over the sea screen.
+Sub :: enum u8 {
+	None,
+	Heading,
+	Adjust,
+	Speed,
+	Sail,
+	Head_For,
+	Dock,
+	Chart,
 }
 
 // Keyboard and gamepad commands; order matches ACTION in web/index.html.
@@ -39,21 +49,30 @@ Sound :: enum u8 {
 	Move,
 	Select,
 	Deny,
+	Sighted,
+	Dock,
 }
 
 Cmd :: enum u8 {
 	New_Voyage,
 	Continue,
 	Sound_Toggle,
-	Port,
-	Starboard,
-	Sail,
 	To_Title,
+	Open, // arg: Sub
+	Back,
+	Set_Heading, // arg: degrees
+	Adjust, // arg: degrees to add
+	Set_Speed, // arg: percent
+	Sail, // arg: turns
+	Head_For, // arg: island
+	Dock, // arg: island, or NO_ISLAND to dock at the only one in range or choose
+	Undock,
 }
 
 Item :: struct {
 	label: string,
 	cmd:   Cmd,
+	arg:   int,
 }
 
 Menu :: struct {
@@ -67,19 +86,18 @@ Ship :: struct {
 	speed:   int, // percent of full sail, 0 ..= 100
 }
 
-Island :: struct {
-	x, y: int,
-}
-
 Game :: struct {
 	seed:       u64,
 	next_seed:  u64, // the world New voyage builds; ?seed=N sets it for QA
 	rng:        Rng,
 	screen:     Screen,
+	sub:        Sub,
 	turn:       int,
 	ship:       Ship,
+	docked:     int, // island index, or NO_ISLAND at sea
 	islands:    [ISLAND_MAX]Island,
 	n_islands:  int,
+	land:       [WORLD_SIZE * WORLD_SIZE]u8, // 0 water, else island index + 1
 	cursor:     int,
 	has_voyage: bool, // a voyage exists (started or loaded) that Continue returns to
 	muted:      bool, // mirrors the page's mute setting, for the menu label
@@ -90,9 +108,10 @@ Game :: struct {
 	n_sounds:   int,
 	log:        [LOG_LINES][LOG_LEN]u8,
 	log_len:    [LOG_LINES]int,
+	menu_text:  [MENU_MAX][MENU_TEXT]u8, // storage for menu labels built on the fly
 }
 
-// A fresh game on the title screen; the world comes from seed.
+// A fresh game on the title screen; the title shows the world New voyage will build.
 title :: proc(g: ^Game, seed: u64) {
 	g^ = {}
 	g.next_seed = seed
@@ -100,64 +119,101 @@ title :: proc(g: ^Game, seed: u64) {
 	logf(g, "Welcome aboard.")
 }
 
+// Builds the world for seed and puts the ship at its home port, the first island, docked.
 start_world :: proc(g: ^Game, seed: u64) {
 	g.seed = seed
 	g.rng = rng_make(seed)
-	generate_islands(g)
-	g.ship = {x = WORLD_SIZE / 2 + 0.5, y = WORLD_SIZE / 2 + 0.5, heading = 0, speed = 100}
-}
-
-// Islands placed at random with a minimum gap (Classic's rule). Uses its own generator so the world depends only on
-// the seed, not on play: a save needs to store only the seed to rebuild it.
-generate_islands :: proc(g: ^Game) {
-	r := rng_make(g.seed ~ 0x15_1A_4D_5E_ED)
-	g.n_islands = 0
-	centre := WORLD_SIZE / 2
-	for _ in 0 ..< 2000 {
-		if g.n_islands == ISLAND_MAX {break}
-		x := 2 + rng_below(&r, WORLD_SIZE - 4)
-		y := 2 + rng_below(&r, WORLD_SIZE - 4)
-		if abs(x - centre) < 3 && abs(y - centre) < 3 {continue} // keep the starting tile clear
-		ok := true
-		for i in 0 ..< g.n_islands {
-			dx, dy := g.islands[i].x - x, g.islands[i].y - y
-			if dx * dx + dy * dy < ISLAND_GAP * ISLAND_GAP {
-				ok = false
-				break
-			}
-		}
-		if ok {
-			g.islands[g.n_islands] = {x, y}
-			g.n_islands += 1
+	generate_world(g)
+	g.ship = {x = WORLD_SIZE / 2, y = WORLD_SIZE / 2, heading = 0, speed = 100}
+	g.docked = NO_ISLAND
+	if g.n_islands > 0 {
+		if x, y, ok := mooring(g, 0); ok {
+			g.ship.x, g.ship.y = x, y
+			g.docked = 0
 		}
 	}
-}
-
-is_land :: proc(g: ^Game, tx, ty: int) -> bool {
-	for i in 0 ..< g.n_islands {
-		if g.islands[i].x == tx && g.islands[i].y == ty {return true}
-	}
-	return false
+	look(g)
 }
 
 menu :: proc(g: ^Game) -> (m: Menu) {
-	add :: proc(m: ^Menu, label: string, cmd: Cmd) {
-		m.items[m.n] = {label, cmd}
+	add :: proc(g: ^Game, m: ^Menu, label: string, cmd: Cmd, arg := 0) {
+		if m.n == MENU_MAX {return}
+		m.items[m.n] = {label, cmd, arg}
 		m.n += 1
 	}
+	addf :: proc(g: ^Game, m: ^Menu, cmd: Cmd, arg: int, format: string, args: ..any) {
+		if m.n == MENU_MAX {return}
+		label := fmt.bprintf(g.menu_text[m.n][:], format, ..args)
+		add(g, m, label, cmd, arg)
+	}
+	sound_label := g.muted ? "Sound: off" : "Sound: on"
+
 	switch g.screen {
 	case .Title:
-		if g.has_voyage {add(&m, "Continue voyage", .Continue)}
-		add(&m, "New voyage", .New_Voyage)
-		add(&m, g.muted ? "Sound: off" : "Sound: on", .Sound_Toggle)
+		if g.has_voyage {add(g, &m, "Continue voyage", .Continue)}
+		add(g, &m, "New voyage", .New_Voyage)
+		add(g, &m, sound_label, .Sound_Toggle)
+	case .Docked:
+		add(g, &m, "Cast off", .Undock)
+		add(g, &m, sound_label, .Sound_Toggle)
+		add(g, &m, "Back to title", .To_Title)
 	case .Sea:
-		add(&m, "Turn to port", .Port)
-		add(&m, "Turn to starboard", .Starboard)
-		add(&m, "Sail one league", .Sail)
-		add(&m, g.muted ? "Sound: off" : "Sound: on", .Sound_Toggle)
-		add(&m, "Back to title", .To_Title)
+		switch g.sub {
+		case .None:
+			add(g, &m, "Set heading", .Open, int(Sub.Heading))
+			add(g, &m, "Adjust heading", .Open, int(Sub.Adjust))
+			add(g, &m, "Set speed", .Open, int(Sub.Speed))
+			add(g, &m, "Sail", .Open, int(Sub.Sail))
+			if any_charted(g) {add(g, &m, "Head for", .Open, int(Sub.Head_For))}
+			near: [ISLAND_MAX]int
+			if dockable(g, near[:]) > 0 {add(g, &m, "Dock", .Dock, NO_ISLAND)}
+			add(g, &m, "Chart", .Open, int(Sub.Chart))
+			add(g, &m, sound_label, .Sound_Toggle)
+			add(g, &m, "Back to title", .To_Title)
+		case .Heading:
+			for p in 0 ..< 8 {addf(g, &m, .Set_Heading, p * 45, "%s %03d", compass(p * 45), p * 45)}
+			add(g, &m, "Back", .Back)
+		case .Adjust:
+			for d in ([6]int{-10, -5, -1, 1, 5, 10}) {
+				addf(g, &m, .Adjust, d, "%s %d", d < 0 ? "Port" : "Starboard", abs(d))
+			}
+			add(g, &m, "Back", .Back)
+		case .Speed:
+			add(g, &m, "Full sail", .Set_Speed, 100)
+			add(g, &m, "Three quarters", .Set_Speed, 75)
+			add(g, &m, "Half sail", .Set_Speed, 50)
+			add(g, &m, "Quarter sail", .Set_Speed, 25)
+			add(g, &m, "All stop", .Set_Speed, 0)
+			add(g, &m, "Back", .Back)
+		case .Sail:
+			for t in ([5]int{1, 3, 5, 10, 25}) {addf(g, &m, .Sail, t, "%d turn%s", t, t == 1 ? "" : "s")}
+			add(g, &m, "Back", .Back)
+		case .Head_For:
+			near: [MENU_MAX - 1]int
+			n := charted_by_distance(g, near[:])
+			for j in 0 ..< n {
+				i := near[j]
+				d := int(math.round(island_distance(g, i, g.ship.x, g.ship.y)))
+				addf(g, &m, .Head_For, i, "%s %d %s", island_name(g, i), d, compass(bearing_to(g, i)))
+			}
+			add(g, &m, "Back", .Back)
+		case .Dock:
+			near: [MENU_MAX - 1]int
+			n := dockable(g, near[:])
+			for j in 0 ..< n {add(g, &m, island_name(g, near[j]), .Dock, near[j])}
+			add(g, &m, "Back", .Back)
+		case .Chart:
+			add(g, &m, "Back", .Back)
+		}
 	}
 	return
+}
+
+any_charted :: proc(g: ^Game) -> bool {
+	for i in 0 ..< g.n_islands {
+		if g.islands[i].charted {return true}
+	}
+	return false
 }
 
 input :: proc(g: ^Game, a: Action) {
@@ -173,8 +229,10 @@ input :: proc(g: ^Game, a: Action) {
 	case .Confirm:
 		choose(g, g.cursor)
 	case .Back:
-		if g.screen == .Sea {
-			do_cmd(g, .To_Title)
+		if g.sub != .None {
+			do_cmd(g, .Back, 0)
+		} else if g.screen != .Title {
+			do_cmd(g, .To_Title, 0)
 		} else {
 			sound(g, .Deny)
 		}
@@ -189,7 +247,7 @@ choose :: proc(g: ^Game, i: int) {
 		return
 	}
 	g.cursor = i
-	do_cmd(g, m.items[i].cmd)
+	do_cmd(g, m.items[i].cmd, m.items[i].arg)
 }
 
 click :: proc(g: ^Game, x, y: int) {
@@ -204,60 +262,138 @@ click :: proc(g: ^Game, x, y: int) {
 	}
 }
 
-do_cmd :: proc(g: ^Game, cmd: Cmd) {
+open :: proc(g: ^Game, s: Sub) {
+	g.sub = s
+	g.cursor = 0
+}
+
+do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 	sound(g, .Select)
 	switch cmd {
 	case .New_Voyage:
-		seed := g.next_seed
-		start_world(g, seed)
+		start_world(g, g.next_seed)
 		g.next_seed = rng_next(&g.rng)
 		g.turn = 0
-		g.screen = .Sea
+		g.screen = g.docked == NO_ISLAND ? .Sea : .Docked
+		g.sub = .None
 		g.has_voyage = true
 		g.cursor = 0
-		logf(g, "A new voyage begins.")
+		if g.docked != NO_ISLAND {
+			logf(g, "Home port: %s.", island_name(g, g.docked))
+		} else {
+			logf(g, "A new voyage begins.")
+		}
 		g.want_save = true
 	case .Continue:
-		g.screen = .Sea
+		g.screen = g.docked == NO_ISLAND ? .Sea : .Docked
+		g.sub = .None
 		g.cursor = 0
 	case .Sound_Toggle:
 		g.want_mute = true
-	case .Port:
-		g.ship.heading = wrap_heading(g.ship.heading - 45)
-		logf(g, "Heading %03d %s.", g.ship.heading, compass(g.ship.heading))
-		g.want_save = true
-	case .Starboard:
-		g.ship.heading = wrap_heading(g.ship.heading + 45)
-		logf(g, "Heading %03d %s.", g.ship.heading, compass(g.ship.heading))
-		g.want_save = true
-	case .Sail:
-		sail(g)
-		g.want_save = true
 	case .To_Title:
 		g.screen = .Title
+		g.sub = .None
 		g.cursor = 0
+	case .Open:
+		if arg < 0 || arg > int(max(Sub)) {return}
+		open(g, Sub(arg))
+	case .Back:
+		open(g, .None)
+	case .Set_Heading:
+		g.ship.heading = wrap_heading(arg)
+		logf(g, "Heading %03d %s.", g.ship.heading, compass(g.ship.heading))
+		open(g, .None)
+		g.want_save = true
+	case .Adjust:
+		g.ship.heading = wrap_heading(g.ship.heading + arg)
+		logf(g, "Heading %03d %s.", g.ship.heading, compass(g.ship.heading))
+		g.want_save = true
+	case .Set_Speed:
+		g.ship.speed = clamp(arg, 0, 100)
+		if g.ship.speed == 0 {
+			logf(g, "All stop.")
+		} else {
+			logf(g, "Speed %d%%.", g.ship.speed)
+		}
+		open(g, .None)
+		g.want_save = true
+	case .Sail:
+		sail(g, clamp(arg, 1, 100))
+		g.want_save = true
+	case .Head_For:
+		if arg < 0 || arg >= g.n_islands || !g.islands[arg].charted {return}
+		g.ship.heading = bearing_to(g, arg)
+		logf(g, "For %s, %03d.", island_name(g, arg), g.ship.heading)
+		open(g, .None)
+		g.want_save = true
+	case .Dock:
+		near: [ISLAND_MAX]int
+		n := dockable(g, near[:])
+		target := NO_ISLAND
+		if arg == NO_ISLAND {
+			if n == 1 {
+				target = near[0]
+			} else if n > 1 {
+				open(g, .Dock)
+				return
+			}
+		} else {
+			for j in 0 ..< n {if near[j] == arg {target = arg}}
+		}
+		if target == NO_ISLAND {
+			sound(g, .Deny)
+			logf(g, "Nothing to dock at.")
+			return
+		}
+		g.docked = target
+		g.screen = .Docked
+		open(g, .None)
+		sound(g, .Dock)
+		logf(g, "Docked at %s.", island_name(g, target))
+		g.want_save = true
+	case .Undock:
+		if g.docked != NO_ISLAND {logf(g, "Cast off from %s.", island_name(g, g.docked))}
+		g.docked = NO_ISLAND
+		g.screen = .Sea
+		open(g, .None)
+		g.want_save = true
 	}
 }
 
-// Move one tile along the heading, scaled by speed. Stops at the edge of the world and refuses to sail onto land.
-sail :: proc(g: ^Game) {
+// Sail up to turns turns along the heading at the current speed. Stops early at land, at the edge of the charts, or
+// on sighting a new island. At all stop the turns simply pass.
+sail :: proc(g: ^Game, turns: int) {
 	rad := f32(g.ship.heading) * math.PI / 180
 	step := f32(g.ship.speed) / 100
-	nx := g.ship.x + math.sin(rad) * step
-	ny := g.ship.y - math.cos(rad) * step
-	if nx < 0 || ny < 0 || nx >= WORLD_SIZE || ny >= WORLD_SIZE {
-		sound(g, .Deny)
-		logf(g, "The edge of the charts.")
-		return
+	for t in 0 ..< turns {
+		if g.turn >= TURN_MAX {return}
+		nx := g.ship.x + math.sin(rad) * step
+		ny := g.ship.y - math.cos(rad) * step
+		if nx < 0 || ny < 0 || nx >= WORLD_SIZE || ny >= WORLD_SIZE {
+			sound(g, .Deny)
+			logf(g, "The edge of the charts.")
+			return
+		}
+		if is_land(g, int(nx), int(ny)) {
+			sound(g, .Deny)
+			logf(g, "Land ahead!")
+			return
+		}
+		g.ship.x, g.ship.y = nx, ny
+		g.turn += 1
+		if s := look(g); s != NO_ISLAND {
+			sound(g, .Sighted)
+			logf(g, "Sighted %s!", island_name(g, s))
+			return
+		}
+		if t == turns - 1 {
+			if g.ship.speed == 0 {
+				logf(g, "Waited %d turn%s.", turns, turns == 1 ? "" : "s")
+			} else {
+				logf(g, "Sailed %d turn%s %s.", turns, turns == 1 ? "" : "s", compass(g.ship.heading))
+			}
+		}
 	}
-	if is_land(g, int(nx), int(ny)) {
-		sound(g, .Deny)
-		logf(g, "Land ahead!")
-		return
-	}
-	g.ship.x, g.ship.y = nx, ny
-	g.turn += 1
-	logf(g, "Turn %d: sailed %s.", g.turn, compass(g.ship.heading))
 }
 
 wrap_heading :: proc(h: int) -> int {

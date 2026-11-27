@@ -35,6 +35,7 @@ DEEP :: 0x0e1a2e
 PANEL :: 0x141c2a
 EDGE :: 0x3a4a62
 HILITE :: 0x2a3a58
+LAND :: 0xb4532a
 
 ctx: runtime.Context
 state: game.Game
@@ -70,7 +71,10 @@ boot :: proc "c" (seed_hi, seed_lo: i32, seeded, muted: bool, save_len: i32) {
 	if !qa && save_len > 0 {
 		err := game.Load_Error.Size // longer than the buffer: the page wrote only its first bytes
 		if int(save_len) <= len(load_buf) {err = game.save_decode(&state, load_buf[:save_len])}
-		if err != .None {
+		if err == .Version {
+			game.logf(&state, "Old save: the sea")
+			game.logf(&state, "has changed. Sorry!")
+		} else if err != .None {
 			game.logf(&state, "Bad save (%v).", err)
 		} else {
 			game.logf(&state, "Voyage restored.")
@@ -131,11 +135,36 @@ step :: proc(dt: f64, c: runtime.Context) -> bool {
 }
 
 draw :: proc(g: ^game.Game) {
-	draw_sea(g)
+	if g.screen == .Sea && g.sub == .Chart {
+		draw_chart(g)
+	} else {
+		draw_sea(g)
+	}
 	draw_panel(g)
 }
 
-// The sea view: the ship stays in the centre and the world scrolls under it.
+// Coastline tiles from the Bountiful Bits Natural sheet, by land_mask (1 north, 2 east, 4 south, 8 west). Islands are
+// built so only these nine masks occur; anything else falls back to the lone patch.
+coast_tile :: proc(mask, h: int) -> (col, row: i32) {
+	switch mask {
+	case 6: return 17, 11 // north-west corner
+	case 12: return 18, 11 // north-east corner
+	case 3: return 16, 14 // south-west corner
+	case 9: return 20, 13 // south-east corner
+	case 7: return 17, 12 // west shore
+	case 14: return 19, 12 // north shore
+	case 11: return 17, 14 // south shore
+	case 13: return 19, 14 // east shore
+	case 15:
+		INNER := [5][2]i32{{18, 13}, {17, 13}, {19, 13}, {18, 12}, {18, 14}}
+		v := INNER[h % 5]
+		return v.x, v.y
+	}
+	return 14, 10
+}
+
+// The sea view: the ship stays in the centre and the world scrolls under it. Beyond the view distance the sea is hazed
+// and only charted islands show.
 draw_sea :: proc(g: ^game.Game) {
 	T :: f32(game.TILE)
 	half := f32(game.VIEW_TILES) / 2
@@ -154,10 +183,37 @@ draw_sea :: proc(g: ^game.Game) {
 			fill_rect(px, py, T, T, SEA, 1)
 			h := tile_hash(tx, ty)
 			if h % 5 == 0 {fill_rect(px + f32(h / 5 % 7), py + f32(h / 35 % 8), 3, 1, SEA_FLECK, 1)}
-			if game.is_land(g, tx, ty) {draw_tile(14, 10, px, py)} // a lone patch of ground; coastlines come in phase 1
+			if i := game.land_at(g, tx, ty); i != game.NO_ISLAND && g.islands[i].charted {
+				mask := game.land_mask(g, tx, ty)
+				c, r := coast_tile(mask, h)
+				draw_tile(c, r, px, py)
+				if mask == 15 && h % 3 == 0 {draw_tile(i32(22 + h / 3 % 6), 1, px, py)} // a tree
+			}
+			dx, dy := f32(tx) + 0.5 - g.ship.x, f32(ty) + 0.5 - g.ship.y
+			if dx * dx + dy * dy > game.VIEW_DISTANCE * game.VIEW_DISTANCE {fill_rect(px, py, T, T, DEEP, 0.4)}
 		}
 	}
 	draw_ship(half * T, half * T, f32(g.ship.heading))
+}
+
+// The whole world at two pixels a tile: charted land, the ship and its view.
+draw_chart :: proc(g: ^game.Game) {
+	S :: f32(2)
+	fill_rect(0, 0, game.PANEL_X, game.LOGICAL_H, SEA, 1)
+	for ty in 0 ..< game.WORLD_SIZE {
+		for tx in 0 ..< game.WORLD_SIZE {
+			if i := game.land_at(g, tx, ty); i != game.NO_ISLAND && g.islands[i].charted {
+				fill_rect(f32(tx) * S, f32(ty) * S, S, S, LAND, 1)
+			}
+		}
+	}
+	sx, sy := g.ship.x * S, g.ship.y * S
+	r := f32(game.VIEW_DISTANCE) * S
+	fill_rect(sx - r, sy - r, 2 * r, 1, WHITE, 0.25)
+	fill_rect(sx - r, sy + r, 2 * r, 1, WHITE, 0.25)
+	fill_rect(sx - r, sy - r, 1, 2 * r, WHITE, 0.25)
+	fill_rect(sx + r, sy - r, 1, 2 * r, WHITE, 0.25)
+	fill_rect(math.round(sx) - 1, math.round(sy) - 1, 3, 3, WHITE, 1)
 }
 
 tile_hash :: proc(x, y: int) -> int {
@@ -179,10 +235,21 @@ draw_panel :: proc(g: ^game.Game) {
 		draw_text(x0 + 80, 18, "SEAFARERS", GOLD, 1, true)
 		draw_text(x0 + 80, 32, "of SPLORR!!", WHITE, 1, true)
 		draw_text(x0 + 80, 46, "sail, trade, retire", DIM, 1, true)
+	case .Docked:
+		draw_text(tx, 14, fmt.bprintf(buf[:], "Turn %d", g.turn), WHITE, 1, false)
+		draw_text(tx, 28, "Docked at", DIM, 1, false)
+		if g.docked != game.NO_ISLAND {draw_text(tx, 42, game.island_name(g, g.docked), GOLD, 1, false)}
 	case .Sea:
 		draw_text(tx, 14, fmt.bprintf(buf[:], "Turn %d", g.turn), WHITE, 1, false)
-		draw_text(tx, 28, fmt.bprintf(buf[:], "Heading %03d %s", g.ship.heading, game.compass(g.ship.heading)), WHITE, 1, false)
-		draw_text(tx, 42, fmt.bprintf(buf[:], "Speed %d%%", g.ship.speed), WHITE, 1, false)
+		if g.sub == .Chart {
+			n := 0
+			for i in 0 ..< g.n_islands {if g.islands[i].charted {n += 1}}
+			draw_text(tx, 28, "The chart", GOLD, 1, false)
+			draw_text(tx, 42, fmt.bprintf(buf[:], "%d of %d islands", n, g.n_islands), DIM, 1, false)
+		} else {
+			draw_text(tx, 28, fmt.bprintf(buf[:], "Heading %03d %s", g.ship.heading, game.compass(g.ship.heading)), WHITE, 1, false)
+			draw_text(tx, 42, g.ship.speed == 0 ? "All stop" : fmt.bprintf(buf[:], "Speed %d%%", g.ship.speed), WHITE, 1, false)
+		}
 	}
 	fill_rect(x0 + 4, game.MENU_Y - game.LINE - 2, game.LOGICAL_W - x0 - 8, 1, EDGE, 1)
 
