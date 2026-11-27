@@ -556,7 +556,7 @@ version_2_saves_load_with_starting_values :: proc(t: ^testing.T) {
 }
 
 @(test)
-version_3_fields_round_trip_and_are_checked :: proc(t: ^testing.T) {
+survival_fields_round_trip_and_are_checked :: proc(t: ^testing.T) {
 	g := new(Game)
 	defer free(g)
 	title(g, 77)
@@ -588,4 +588,185 @@ version_3_fields_round_trip_and_are_checked :: proc(t: ^testing.T) {
 	put_u32(bad[48:], RATIONS_MAX + 1)
 	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
 	testing.expect(t, !h.has_voyage)
+}
+
+// Docked at the home port of a fresh voyage, with a known market: flour and timber traded, every commodity at 1.0.
+trading_post :: proc(g: ^Game) {
+	title(g, 21)
+	do_cmd(g, .New_Voyage, 0)
+	g.trades[0] = {.Flour, .Timber, .Pepper}
+	for c in Commodity {
+		g.usual[0].supply[c], g.usual[0].demand[c] = 1000, 1000
+	}
+	g.markets[0] = g.usual[0]
+	do_cmd(g, .Open, int(Sub.Market))
+}
+
+@(test)
+goods_table_is_sane :: proc(t: ^testing.T) {
+	testing.expect_value(t, base_value(.Flour), 6)
+	testing.expect_value(t, base_value(.Rope), 9)
+	testing.expect_value(t, base_value(.Pepper), 40)
+	testing.expect_value(t, base_value(.Cutlasses), 28)
+	for good in Good {
+		testing.expect(t, GOODS[good].tons >= 1 && GOODS[good].tons <= 2)
+		testing.expect(t, len(GOODS[good].name) > 0)
+	}
+}
+
+@(test)
+islands_trade_two_to_six_goods :: proc(t: ^testing.T) {
+	for seed in u64(1) ..= 10 {
+		g := new(Game)
+		defer free(g)
+		title(g, seed)
+		for i in 0 ..< g.n_islands {
+			n := card(g.trades[i])
+			testing.expect(t, n >= GOODS_PER_ISLAND_MIN && n <= GOODS_PER_ISLAND_MAX)
+			for c in Commodity {
+				testing.expect(t, g.markets[i].supply[c] >= 600 && g.markets[i].supply[c] <= 1400)
+			}
+		}
+		// The market menu (goods, rations, back) always fits.
+		do_cmd(g, .New_Voyage, 0)
+		do_cmd(g, .Open, int(Sub.Market))
+		testing.expect_value(t, menu(g).n, card(g.trades[0]) + 2)
+	}
+}
+
+@(test)
+prices_follow_supply_and_demand :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	trading_post(g)
+	testing.expect_value(t, sell_price(g, 0, .Flour), 6) // at par: the base value
+	testing.expect_value(t, buy_price(g, 0, .Flour), 5) // 10% below, rounded down
+	testing.expect_value(t, ration_price(g, 0), 4)
+	g.markets[0].demand[.Grain] = 2000
+	testing.expect_value(t, sell_price(g, 0, .Flour), 12)
+	g.markets[0].supply[.Grain] = 4000
+	testing.expect_value(t, sell_price(g, 0, .Flour), 3)
+}
+
+@(test)
+buying_and_selling :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	trading_post(g)
+	testing.expect_value(t, g.money, START_MONEY)
+	do_cmd(g, .Pick_Good, int(Good.Flour))
+	testing.expect_value(t, g.sub, Sub.Trade)
+	do_cmd(g, .Buy, 10)
+	testing.expect_value(t, g.cargo[.Flour], 10)
+	testing.expect(t, g.money < START_MONEY - 60) // the price rose as we bought
+	testing.expect(t, g.markets[0].demand[.Grain] == 1000 + 10 * 3 * IMPACT)
+	testing.expect_value(t, hold_used(g), 10)
+	worth := score(g)
+	testing.expect_value(t, worth, g.money + 60)
+	money := g.money
+	do_cmd(g, .Sell, ALL)
+	testing.expect_value(t, g.cargo[.Flour], 0)
+	testing.expect(t, g.money > money && g.money < START_MONEY) // the round trip loses the spread
+	do_cmd(g, .Sell, 1) // nothing left
+	testing.expect_value(t, g.cargo[.Flour], 0)
+	// Goods the island does not trade cannot be picked.
+	do_cmd(g, .Back, 0)
+	testing.expect_value(t, g.sub, Sub.Market)
+	do_cmd(g, .Pick_Good, int(Good.Rum))
+	testing.expect_value(t, g.sub, Sub.Market)
+	do_cmd(g, .Back, 0)
+	testing.expect_value(t, g.sub, Sub.None)
+}
+
+@(test)
+the_hold_and_the_purse_limit_buying :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	trading_post(g)
+	g.money = 1_000_000
+	do_cmd(g, .Pick_Good, int(Good.Timber))
+	do_cmd(g, .Buy, ALL)
+	testing.expect_value(t, g.cargo[.Timber], HOLD_TONS / 2) // two tons each
+	testing.expect_value(t, hold_used(g), HOLD_TONS)
+	do_cmd(g, .Back, 0)
+	do_cmd(g, .Pick_Good, int(Good.Flour))
+	do_cmd(g, .Buy, 1)
+	testing.expect_value(t, g.cargo[.Flour], 0)
+
+	h := new(Game)
+	defer free(h)
+	trading_post(h)
+	h.money = 100
+	do_cmd(h, .Pick_Good, int(Good.Pepper))
+	do_cmd(h, .Buy, ALL)
+	testing.expect_value(t, h.cargo[.Pepper], 2) // 40, then a little dearer, then out of money
+	testing.expect(t, h.money < 40)
+}
+
+@(test)
+rations_from_the_market :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	trading_post(g)
+	do_cmd(g, .Pick_Good, RATIONS)
+	do_cmd(g, .Buy, 10)
+	testing.expect_value(t, g.rations, START_RATIONS + 100)
+	testing.expect(t, g.money < START_MONEY - 39)
+	testing.expect_value(t, hold_used(g), 0)
+	do_cmd(g, .Sell, 1) // rations cannot be sold back
+	testing.expect_value(t, g.rations, START_RATIONS + 100)
+}
+
+@(test)
+markets_drift_back :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	trading_post(g)
+	g.markets[0].demand[.Grain] = 3000
+	g.markets[0].supply[.Ore] = 300
+	for _ in 0 ..< 400 {drift_markets(g)}
+	testing.expect_value(t, g.markets[0].demand[.Grain], 1000)
+	testing.expect_value(t, g.markets[0].supply[.Ore], 1000)
+	// Time passing at sea drifts them too.
+	g.markets[0].demand[.Grain] = 2000
+	do_cmd(g, .Back, 0)
+	do_cmd(g, .Careen, int(Side.Port))
+	testing.expect(t, g.markets[0].demand[.Grain] < 2000)
+}
+
+@(test)
+trade_state_round_trips :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	trading_post(g)
+	do_cmd(g, .Pick_Good, int(Good.Flour))
+	do_cmd(g, .Buy, 7)
+	good: [SAVE_SIZE]u8
+	save_encode(g, &good)
+	h := new(Game)
+	defer free(h)
+	title(h, 3)
+	testing.expect_value(t, save_decode(h, good[:]), Load_Error.None)
+	testing.expect_value(t, h.cargo, g.cargo)
+	testing.expect_value(t, h.money, g.money)
+	testing.expect_value(t, h.markets[0], g.markets[0])
+
+	title(h, 3)
+	bad := good
+	put_u16(bad[58:], HOLD_TONS + 1) // more flour than the hold holds
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = good
+	put_u16(bad[82:], MARKET_MIN - 1)
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = good
+	put_u16(bad[SAVE_SIZE - 2:], 1000) // a market for an island slot that does not exist
+	if g.n_islands < ISLAND_MAX {testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)}
+	testing.expect(t, !h.has_voyage)
+
+	// A Phase 2 save (version 3) loads with the starting purse and an empty hold.
+	v3 := good
+	v3[3] = 3
+	testing.expect_value(t, save_decode(h, v3[:SAVE_V3_SIZE]), Load_Error.None)
+	testing.expect_value(t, h.money, START_MONEY)
+	testing.expect_value(t, hold_used(h), 0)
 }

@@ -233,7 +233,7 @@ draw_chart :: proc(g: ^game.Game) {
 
 // Ship's condition along the top of the sea view.
 draw_hud :: proc(g: ^game.Game) {
-	fill_rect(0, 0, game.PANEL_X, 31, DEEP, 0.7)
+	fill_rect(0, 0, game.PANEL_X, 45, DEEP, 0.7)
 	buf: [48]u8
 	food: u32 = g.rations == 0 ? RED : (g.rations < 100 ? GOLD : WHITE)
 	draw_text(4, 12, fmt.bprintf(buf[:], "Food %d", g.rations), food, 1, false)
@@ -241,6 +241,9 @@ draw_hud :: proc(g: ^game.Game) {
 	draw_text(150, 12, fmt.bprintf(buf[:], "Health %d", g.health), g.health < 50 ? RED : WHITE, 1, false)
 	p, sb := game.hull_clean(g, .Port), game.hull_clean(g, .Starboard)
 	draw_text(4, 26, fmt.bprintf(buf[:], "Hull: port %d%%, starboard %d%%", p, sb), min(p, sb) < 60 ? GOLD : DIM, 1, false)
+	draw_text(4, 40, fmt.bprintf(buf[:], "Money %d", g.money), GOLD, 1, false)
+	used := game.hold_used(g)
+	draw_text(110, 40, fmt.bprintf(buf[:], "Hold %d/%d", used, game.HOLD_TONS), used >= game.HOLD_TONS ? GOLD : WHITE, 1, false)
 }
 
 tile_hash :: proc(x, y: int) -> int {
@@ -277,6 +280,19 @@ draw_panel :: proc(g: ^game.Game) {
 			if g.has_best {draw_text(tx, 42, fmt.bprintf(buf[:], "Best %d", g.best), DIM, 1, false)}
 		}
 	case .Docked:
+		if g.sub == .Market || g.sub == .Trade {
+			draw_text(tx, 14, fmt.bprintf(buf[:], "Money %d", g.money), GOLD, 1, false)
+			draw_text(tx, 28, fmt.bprintf(buf[:], "Hold %d of %d tons", game.hold_used(g), game.HOLD_TONS), WHITE, 1, false)
+			if g.sub == .Market {
+				draw_text(tx, 42, "Price: buy / sell", DIM, 1, false)
+			} else if g.trade_good == game.RATIONS {
+				draw_text(tx, 42, fmt.bprintf(buf[:], "Rations: %d", g.rations), WHITE, 1, false)
+			} else {
+				good := game.Good(g.trade_good)
+				draw_text(tx, 42, fmt.bprintf(buf[:], "%s: %d aboard", game.GOODS[good].name, g.cargo[good]), WHITE, 1, false)
+			}
+			break
+		}
 		draw_text(tx, 14, fmt.bprintf(buf[:], "Turn %d of %d", g.turn, game.TURN_LIMIT), WHITE, 1, false)
 		draw_text(tx, 28, "Docked at", DIM, 1, false)
 		if g.docked != game.NO_ISLAND {draw_text(tx, 42, game.island_name(g, g.docked), GOLD, 1, false)}

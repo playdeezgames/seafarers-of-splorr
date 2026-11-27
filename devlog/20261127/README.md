@@ -46,3 +46,20 @@ Not posted. A working record.
 - Every file URL now carries a build id (`?v=...`, stamped by `tools/build.sh`), so a new build is never mixed with a
   cached old `game.wasm` (the Pages CDN caches for ten minutes; this happened after the Phase 1 push).
 - 24 native tests.
+
+## Phase 3, trade (same day)
+
+- Classic's market model: six commodities with base prices (grain 2, fish 3, timber 4, wool 5, ore 8, spice 20);
+  every island keeps a supply and a demand for each, and a commodity's price there is base × demand ÷ supply.
+- Twelve goods made of commodities, Claude's draft approved by the user: flour, salt fish, timber (2 tons), rope,
+  sailcloth, woolens, nails, iron tools, rum, dyes, cutlasses, pepper. Each island trades 2 to 6 of them (chosen by
+  each good's rarity) and sells at the summed commodity prices, buying back 10% lower.
+- Trading moves the market one unit at a time (buying raises demand, selling raises supply), so bulk buying gets
+  dearer; every market drifts back to its usual level a little each turn. The impact was cut to a fifth after the
+  first try, when ten flour raised the price by half.
+- A 50-ton hold, a 250 starting purse (the user's numbers), and rations in lots of ten at every market, priced off its
+  grain and taking no hold space.
+- Net worth (the retirement score) now counts cargo at its base value.
+- About a third of island-pair routes for a traded good are profitable; the best margins run to 260 to 300%.
+- Save version 4 (1,042 bytes: cargo and every island's current market). Version 2 and 3 saves load with the
+  starting purse, an empty hold and markets at their usual levels. 32 native tests.

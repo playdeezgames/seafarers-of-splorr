@@ -43,6 +43,7 @@ tick :: proc(g: ^Game, under_way: bool) -> bool {
 		g.health = max(g.health - 1, 0)
 	}
 	if g.satiety == STAT_MAX {g.health = min(g.health + 1, STAT_MAX)}
+	drift_markets(g)
 	if under_way {
 		for s in Side {g.foul[s] = min(g.foul[s] + FOUL_PER_TURN, FOUL_MAX)}
 	}
@@ -63,9 +64,9 @@ tick :: proc(g: ^Game, under_way: bool) -> bool {
 	return true
 }
 
-// Net worth: money now; cargo joins it with trade (Phase 3).
+// Net worth: money plus the cargo at its base value (the user's choice of score, November 27, 2026).
 score :: proc(g: ^Game) -> int {
-	return g.money
+	return g.money + cargo_value(g)
 }
 
 end_voyage :: proc(g: ^Game, o: Outcome) {

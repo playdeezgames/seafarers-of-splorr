@@ -6,6 +6,12 @@ import "core:math"
 // world is rebuilt from the seed, so a new generator makes an old save describe a different sea). An older version is
 // refused with Load_Error.Version and the page says so.
 //
+// Version 4 (Phase 3) is version 3 followed by:
+// 58  u16 x 12              cargo, by Good
+// 82  u16 x 40 x 6 x 2      markets: for each island slot, for each commodity, supply then demand (thousandths)
+// Versions 2 and 3 still load: the purse is set to the starting money (no voyage could earn any before Phase 3), the
+// hold is empty and the markets are at their usual levels.
+//
 // Version 3 (Phase 2) is version 2 followed by:
 // 44  u32    money
 // 48  u32    rations
@@ -27,8 +33,9 @@ import "core:math"
 // 34  u8     speed (percent)
 // 35  u8     docked island, 255 at sea
 // 36  u64    charted islands, bit i for island i
-SAVE_VERSION :: 3
-SAVE_SIZE :: 58
+SAVE_VERSION :: 4
+SAVE_SIZE :: 82 + ISLAND_MAX * len(Commodity) * 4
+SAVE_V3_SIZE :: 58
 SAVE_V2_SIZE :: 44
 NOT_DOCKED :: 255
 
@@ -63,6 +70,15 @@ save_encode :: proc(g: ^Game, buf: ^[SAVE_SIZE]u8) {
 	buf[53] = u8(g.health)
 	put_u16(buf[54:], u16(g.foul[.Port]))
 	put_u16(buf[56:], u16(g.foul[.Starboard]))
+	for good in Good {put_u16(buf[58 + 2 * int(good):], u16(g.cargo[good]))}
+	at := 82
+	for i in 0 ..< ISLAND_MAX {
+		for c in Commodity {
+			put_u16(buf[at:], u16(g.markets[i].supply[c]))
+			put_u16(buf[at + 2:], u16(g.markets[i].demand[c]))
+			at += 4
+		}
+	}
 }
 
 // Restores a voyage into g (on the title screen, ready to continue). On any error g is left as it was.
@@ -70,8 +86,9 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 	if len(data) < 4 {return .Size}
 	if data[0] != 'S' || data[1] != 'O' || data[2] != 'S' {return .Magic}
 	version := data[3]
-	if version != SAVE_VERSION && version != 2 {return .Version} // before the size: versions differ in size
-	if len(data) != (version == 2 ? SAVE_V2_SIZE : SAVE_SIZE) {return .Size}
+	if version < 2 || version > SAVE_VERSION {return .Version} // before the size: versions differ in size
+	sizes := [5]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_SIZE}
+	if len(data) != sizes[version] {return .Size}
 	turn := get_u32(data[20:])
 	x := transmute(f32)get_u32(data[24:])
 	y := transmute(f32)get_u32(data[28:])
@@ -95,7 +112,7 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 	if t.docked != NO_ISLAND && island_distance(t, t.docked, x, y) > DOCK_RANGE {return .Range}
 	for i in 0 ..< t.n_islands {t.islands[i].charted = charted & (1 << uint(i)) != 0}
 
-	if version == SAVE_VERSION {
+	if version >= 3 {
 		money, rations := get_u32(data[44:]), get_u32(data[48:])
 		satiety, health := int(data[52]), int(data[53])
 		port, starboard := int(get_u16(data[54:])), int(get_u16(data[56:]))
@@ -104,6 +121,29 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 		if port > FOUL_MAX || starboard > FOUL_MAX {return .Range}
 		t.money, t.rations, t.satiety, t.health = int(money), int(rations), satiety, health
 		t.foul = {.Port = port, .Starboard = starboard}
+	}
+	if version < 4 {
+		t.money = START_MONEY
+	} else {
+		for good in Good {
+			n := int(get_u16(data[58 + 2 * int(good):]))
+			if n > CARGO_MAX {return .Range}
+			t.cargo[good] = n
+		}
+		if hold_used(t) > HOLD_TONS {return .Range}
+		at := 82
+		for i in 0 ..< ISLAND_MAX {
+			for c in Commodity {
+				sup, dem := int(get_u16(data[at:])), int(get_u16(data[at + 2:]))
+				at += 4
+				if i >= t.n_islands {
+					if sup != 0 || dem != 0 {return .Range}
+					continue
+				}
+				if sup < MARKET_MIN || sup > MARKET_MAX || dem < MARKET_MIN || dem > MARKET_MAX {return .Range}
+				t.markets[i].supply[c], t.markets[i].demand[c] = sup, dem
+			}
+		}
 	}
 	t.rng.state = get_u64(data[12:])
 	t.turn = int(turn)

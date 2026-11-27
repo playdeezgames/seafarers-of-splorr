@@ -35,6 +35,8 @@ Sub :: enum u8 {
 	Dock,
 	Chart,
 	Careen,
+	Market, // the goods this island trades, and rations
+	Trade, // buy or sell one good (g.trade_good)
 }
 
 // Keyboard and gamepad commands; order matches ACTION in web/index.html.
@@ -54,6 +56,7 @@ Sound :: enum u8 {
 	Dock,
 	Retire,
 	Lose,
+	Coins,
 }
 
 Cmd :: enum u8 {
@@ -71,7 +74,14 @@ Cmd :: enum u8 {
 	Dock, // arg: island, or NO_ISLAND to dock at the only one in range or choose
 	Undock,
 	Careen, // arg: Side
+	Pick_Good, // arg: Good, or RATIONS
+	Buy, // arg: how many (a large number for "max")
+	Sell, // arg: how many (a large number for "all")
 }
+
+RATIONS :: -1 // Pick_Good's arg for the rations stall
+ALL :: 1_000_000 // Buy and Sell's arg for "as many as possible"
+
 
 Item :: struct {
 	label: string,
@@ -114,6 +124,11 @@ Game :: struct {
 	has_best:   bool,
 	new_best:   bool,
 	want_best:  bool,
+	cargo:      [Good]int,
+	markets:    [ISLAND_MAX]Market, // current, saved
+	usual:      [ISLAND_MAX]Market, // from the seed: where markets drift back to
+	trades:     [ISLAND_MAX]bit_set[Good], // from the seed
+	trade_good: int, // the good open in the Trade submenu, or RATIONS
 	muted:      bool, // mirrors the page's mute setting, for the menu label
 	// Requests to the web layer, cleared by it.
 	want_save:  bool,
@@ -142,7 +157,9 @@ start_world :: proc(g: ^Game, seed: u64) {
 	generate_world(g)
 	g.ship = {x = WORLD_SIZE / 2, y = WORLD_SIZE / 2, heading = 0, speed = 100}
 	g.docked = NO_ISLAND
-	g.money = 0
+	g.money = START_MONEY
+	g.cargo = {}
+	generate_markets(g)
 	g.rations = START_RATIONS
 	g.satiety = STAT_MAX
 	g.health = STAT_MAX
@@ -183,9 +200,39 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			addf(g, &m, .Careen, int(Side.Port), "Port side %d%%", hull_clean(g, .Port))
 			addf(g, &m, .Careen, int(Side.Starboard), "Starboard %d%%", hull_clean(g, .Starboard))
 			add(g, &m, "Back", .Back)
-			break
+			return
+		}
+		switch g.sub {
+		case .Market:
+			i := g.docked
+			for good in Good {
+				if good in g.trades[i] {
+					addf(g, &m, .Pick_Good, int(good), "%s %d/%d", GOODS[good].name, sell_price(g, i, good), buy_price(g, i, good))
+				}
+			}
+			addf(g, &m, .Pick_Good, RATIONS, "Rations %d", ration_price(g, i))
+			add(g, &m, "Back", .Back)
+			return
+		case .Trade:
+			if g.trade_good == RATIONS {
+				add(g, &m, "Buy 10 rations", .Buy, 1)
+				add(g, &m, "Buy 100", .Buy, 10)
+				add(g, &m, "Buy 500", .Buy, 50)
+			} else {
+				good := Good(g.trade_good)
+				addf(g, &m, .Buy, 1, "Buy 1 at %d", sell_price(g, g.docked, good))
+				add(g, &m, "Buy 10", .Buy, 10)
+				add(g, &m, "Buy max", .Buy, ALL)
+				addf(g, &m, .Sell, 1, "Sell 1 at %d", buy_price(g, g.docked, good))
+				add(g, &m, "Sell 10", .Sell, 10)
+				add(g, &m, "Sell all", .Sell, ALL)
+			}
+			add(g, &m, "Back", .Back)
+			return
+		case .None, .Heading, .Adjust, .Speed, .Sail, .Head_For, .Dock, .Chart, .Careen:
 		}
 		add(g, &m, "Cast off", .Undock)
+		add(g, &m, "Market", .Open, int(Sub.Market))
 		add(g, &m, "Careen", .Open, int(Sub.Careen))
 		add(g, &m, sound_label, .Sound_Toggle)
 		add(g, &m, "Back to title", .To_Title)
@@ -236,7 +283,7 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			add(g, &m, "Back", .Back)
 		case .Chart:
 			add(g, &m, "Back", .Back)
-		case .Careen:
+		case .Careen, .Market, .Trade:
 			add(g, &m, "Back", .Back)
 		}
 	}
@@ -334,7 +381,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		if arg < 0 || arg > int(max(Sub)) {return}
 		open(g, Sub(arg))
 	case .Back:
-		open(g, .None)
+		open(g, g.sub == .Trade ? .Market : .None)
 	case .Set_Heading:
 		g.ship.heading = wrap_heading(arg)
 		logf(g, "Heading %03d %s.", g.ship.heading, compass(g.ship.heading))
@@ -392,6 +439,40 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		careen(g, Side(arg))
 		if g.screen != .Over {open(g, .None)}
 		g.want_save = true
+	case .Pick_Good:
+		if g.docked == NO_ISLAND {return}
+		if arg != RATIONS && (arg < 0 || arg > int(max(Good)) || Good(arg) not_in g.trades[g.docked]) {return}
+		g.trade_good = arg
+		open(g, .Trade)
+	case .Buy:
+		if g.docked == NO_ISLAND || g.sub != .Trade {return}
+		n, cost: int
+		if g.trade_good == RATIONS {
+			n, cost = buy_rations(g, arg)
+			n *= RATION_LOT
+		} else {
+			n, cost = buy(g, Good(g.trade_good), arg)
+		}
+		if n > 0 {
+			sound(g, .Coins)
+			logf(g, "Bought %d for %d.", n, cost)
+			g.want_save = true
+		} else {
+			sound(g, .Deny)
+			full := g.trade_good != RATIONS && hold_used(g) + GOODS[Good(g.trade_good)].tons > HOLD_TONS
+			logf(g, full ? "The hold is full." : "Not enough money.")
+		}
+	case .Sell:
+		if g.docked == NO_ISLAND || g.sub != .Trade || g.trade_good == RATIONS {return}
+		n, takings := sell(g, Good(g.trade_good), arg)
+		if n > 0 {
+			sound(g, .Coins)
+			logf(g, "Sold %d for %d.", n, takings)
+			g.want_save = true
+		} else {
+			sound(g, .Deny)
+			logf(g, "None aboard to sell.")
+		}
 	case .Undock:
 		if g.docked != NO_ISLAND {logf(g, "Cast off from %s.", island_name(g, g.docked))}
 		g.docked = NO_ISLAND
