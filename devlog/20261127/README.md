@@ -159,3 +159,22 @@ Not posted. A working record.
   deliveries.
 - The hull is drawn on the HUD; a ship that sinks ends the voyage (nothing sinks one yet).
 - Save version 9 (59 bytes more). Older saves get a sloop with a sound hull. 73 native tests.
+
+## Phase 8, things at sea and combat (same day)
+
+- The user chose encounters **sprung while sailing**, about **one every fifty turns** under way; fights in **menu
+  rounds** (the planning pass); a lost fight costs **hull, crew and cargo**; and merfolk who trade **pearls and coral**.
+- A Spot roll sees an encounter coming, and then you may steer away or close. Each round your crew roll Melee (Track
+  or Melee against a whale) and the foe strikes back: pirates and merfolk wound the crew, a monster or a whale hits the
+  hull. Crew can be killed; the voyage ends if the ship sinks or the captain falls.
+- **Pirates:** fight (loot), flee (a Pilot roll, easier in a faster ship; a failure gives them a free round), parley
+  (a Bargain roll: they let you pass, or attack), or pay a tenth of your purse. If your crew fall below 60% of their
+  health, they take half your money and half of every good.
+- **Sea monster:** fight (salvage money) or flee. **Whale:** hunt it for whale oil, or let it go. **Merfolk:** trade
+  (pearls and coral cheaply; they buy every land good aboard at 120%, or 130% after a good parley), parley, attack
+  them, or sail on. A bad parley can insult them.
+- Three **sea goods** (whale oil, pearls, coral) that no island trades but every island buys, under "Sea goods" in the
+  market. The older save layout keeps the first twelve goods, so worlds and older saves are unchanged.
+- Tuned by simulating 2,000 fights with a quick-start crew: pirates win about 81% of fights for you and rob you 18%,
+  costing about 26 hull; a monster costs about 43 hull; whales and merfolk are rarely a danger.
+- Save version 10 (an encounter in progress and the sea goods); Continue reopens an encounter. 85 native tests.

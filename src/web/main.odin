@@ -71,7 +71,7 @@ save_buffer :: proc "c" () -> rawptr {
 
 @(export)
 save_size :: proc "c" () -> i32 {
-	return game.SAVE_SIZE
+	return i32(game.SAVE_SIZE)
 }
 
 // Called once by the page after the wasm is running. seed_hi and seed_lo make the world seed; seeded is true for
@@ -177,6 +177,7 @@ draw :: proc(g: ^game.Game) {
 		if g.screen == .Sea || g.screen == .Docked {draw_hud(g)}
 		if g.screen == .Docked && (g.sub == .Offer || g.sub == .Carried_Detail) {draw_letter(g)}
 		if g.sub == .Crew {draw_roster(g)}
+		if g.sub == .Encounter && g.foe.kind != .None {draw_encounter(g)}
 		if g.sub == .Ships {draw_ships(g)}
 		if g.sub == .Fittings {draw_fittings(g)}
 		if g.sub == .Fare && g.pick < g.n_fare_offers {draw_passage(g, g.fare_offers[g.pick], false)}
@@ -189,7 +190,7 @@ draw :: proc(g: ^game.Game) {
 		if g.sub == .Candidate && g.pick < g.n_candidates {
 			draw_sheet(g.candidates[g.pick], "For hire", false)
 		}
-		if g.screen == .Docked && g.sub == .Trade && g.trade_good != game.RATIONS {
+		if g.screen == .Docked && g.sub == .Trade && g.trade_good != game.RATIONS && !game.is_sea_good(game.Good(g.trade_good)) {
 			fill_rect(0, 48, game.PANEL_X, game.LOGICAL_H - 48, DEEP, 0.88)
 			draw_book(g, game.Good(g.trade_good), 64)
 		}
@@ -444,6 +445,49 @@ draw_skills :: proc(skills: [game.Skill]int, x, y0: f32) {
 	}
 }
 
+// Whatever was met at sea: what it is, how it stands, and how your crew stands.
+draw_encounter :: proc(g: ^game.Game) {
+	X, Y, W, H :: 12, 52, 216, 150
+	f := g.foe
+	fill_rect(X + 3, Y + 3, W, H, 0x000000, 0.4)
+	fill_rect(X, Y, W, H, PANEL, 0.96)
+	fill_rect(X, Y, W, 1, f.state == .Distant ? EDGE : RED, 1)
+	buf: [96]u8
+	draw_text(X + 8, Y + 16, game.FOES[f.kind].name, GOLD, 1, false)
+	BLURB := [game.Foe_Kind]string {
+		.None    = "",
+		.Pirates = "A black flag and a boarding crew. Fight, run, talk, or pay.",
+		.Monster = "Something vast rises beside the hull. Its blows fall on the ship.",
+		.Whale   = "A great whale blows close by. Its oil fetches a price in port.",
+		.Merfolk = "Merfolk surface, curious. They trade pearls and coral, and pay well for goods.",
+	}
+	y := draw_text_wrapped(X + 8, Y + 32, W - 16, BLURB[f.kind], WHITE)
+	if f.state == .Distant {
+		draw_text_wrapped(X + 8, y + 6, W - 16, "Your lookout saw it in time: you can steer away.", DIM)
+		return
+	}
+	if f.kind == .Merfolk && !f.hostile {
+		y += 6
+		draw_text(X + 8, y, f.friendly ? "They are friendly: better prices." : "They watch you warily.", f.friendly ? GOLD : DIM, 1, false)
+		y += 14
+		draw_text(X + 8, y, fmt.bprintf(buf[:], "Pearls %d, coral %d.", game.merfolk_sells(g, .Pearls), game.merfolk_sells(g, .Coral)), WHITE, 1, false)
+		y += 14
+		draw_text(X + 8, y, fmt.bprintf(buf[:], "For your cargo: %d.", game.merfolk_offer(g)), WHITE, 1, false)
+		return
+	}
+	// The two sides' health.
+	bar :: proc(x, y: f32, label: string, v, most: int, colour: u32) {
+		buf: [32]u8
+		draw_text(x, y, label, DIM, 1, false)
+		fill_rect(x + 70, y - 7, 110, 6, DEEP, 1)
+		if most > 0 {fill_rect(x + 70, y - 7, 110 * f32(clamp(v, 0, most)) / f32(most), 6, colour, 1)}
+		draw_text(x + 184, y, fmt.bprintf(buf[:], "%d", v), WHITE, 1, false)
+	}
+	y = Y + H - 34
+	bar(X + 8, y, f.kind == .Pirates || f.kind == .Merfolk ? "Them" : "It", f.hp, f.hp_max, RED)
+	bar(X + 8, y + 16, "Your crew", game.fighting_strength(g), max(f.strength, 1), GOLD)
+}
+
 // The shipyard's ships side by side, with your own in gold.
 draw_ships :: proc(g: ^game.Game) {
 	X, Y, W, H :: 8, 50, 224, 132
@@ -688,6 +732,12 @@ draw_panel :: proc(g: ^game.Game) {
 		if g.docked != game.NO_ISLAND {draw_text(tx, 42, game.island_name(g, g.docked), GOLD, 1, false)}
 	case .Sea:
 		if crew_panel(g, tx) {break}
+		if g.sub == .Encounter && g.foe.kind != .None {
+			draw_text(tx, 14, g.foe.state == .Distant ? "Sighted" : "At close quarters", g.foe.state == .Distant ? GOLD : RED, 1, false)
+			draw_text(tx, 28, game.FOES[g.foe.kind].name, WHITE, 1, false)
+			draw_text(tx, 42, fmt.bprintf(buf[:], "Hull %d/%d", g.hull, game.hull_max(g)), g.hull * 2 < game.hull_max(g) ? RED : DIM, 1, false)
+			break
+		}
 		draw_text(tx, 14, fmt.bprintf(buf[:], "Turn %d of %d", g.turn, game.TURN_LIMIT), WHITE, 1, false)
 		if g.sub == .Logbook {
 			draw_text(tx, 28, "The captain's log", GOLD, 1, false)

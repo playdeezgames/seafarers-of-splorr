@@ -354,6 +354,8 @@ Log_Kind :: enum u8 {
 	Sold,
 	New_Ship, // value: Ship_Type
 	Passage, // value: fares paid
+	Victory, // value: Foe_Kind
+	Robbed, // value: money taken
 }
 
 Log_Entry :: struct {
@@ -403,6 +405,12 @@ logbook_text :: proc(g: ^Game, e: Log_Entry, buf: []u8) -> string {
 		return fmt.bprintf(buf, "%d: Bought a %s at %s.", e.turn, name, at)
 	case .Passage:
 		return fmt.bprintf(buf, "%d: Fares at %s: %d.", e.turn, at, e.value)
+	case .Victory:
+		WHAT := [Foe_Kind]string{.None = "Won a fight", .Pirates = "Beat pirates", .Monster = "Slew a monster", .Whale = "Took a whale", .Merfolk = "Fought merfolk"}
+		what := e.value >= 0 && e.value <= int(max(Foe_Kind)) ? WHAT[Foe_Kind(e.value)] : "Won a fight"
+		return fmt.bprintf(buf, "%d: %s.", e.turn, what)
+	case .Robbed:
+		return fmt.bprintf(buf, "%d: Robbed of %d.", e.turn, e.value)
 	}
 	return ""
 }

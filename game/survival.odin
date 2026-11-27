@@ -20,6 +20,7 @@ Outcome :: enum u8 {
 	Retired,
 	Starved,
 	Sank, // the hull gave out (from Phase 8's fights and Phase 9's storms)
+	Killed, // the captain fell in a fight
 }
 
 // The ship's speed after fouling, in percent of full sail.
@@ -102,6 +103,9 @@ end_voyage :: proc(g: ^Game, o: Outcome) {
 	case .Sank:
 		sound(g, .Lose)
 		logf(g, "Your ship went down.")
+	case .Killed:
+		sound(g, .Lose)
+		logf(g, "You fell in the fight.")
 	case .None:
 	}
 }

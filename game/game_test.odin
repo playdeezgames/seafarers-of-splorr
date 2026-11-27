@@ -1905,3 +1905,275 @@ ship_state_round_trips :: proc(t: ^testing.T) {
 	testing.expect_value(t, h.hull, SHIPS[.Sloop].hull)
 	testing.expect_value(t, h.n_passengers, 0)
 }
+
+// Phase 8: things at sea and combat.
+
+// At sea with a crew of the given skill, an encounter of kind already close.
+met :: proc(g: ^Game, kind: Foe_Kind, skill: int) {
+	open_sea(g)
+	for k in 1 ..< 4 {
+		g.crew[k] = {name_seed = u32(k * 7 + 1), skills = BASE_SKILL, hp = STAT_MAX}
+	}
+	g.n_crew = 4
+	for k in 0 ..< 4 {
+		for s in Skill {g.crew[k].skills[s] = skill}
+	}
+	begin_encounter(g, kind)
+	g.foe.state = .Close
+}
+
+@(test)
+encounters_spring_while_sailing :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	g.ship.heading = 90
+	sprung := false
+	for _ in 0 ..< 200 {
+		g.ship = {x = 60.5, y = 60.5, heading = 90, speed = 100}
+		turn := g.turn
+		do_cmd(g, .Sail, 25)
+		if g.sub == .Encounter {
+			sprung = true
+			testing.expect(t, g.turn - turn <= 25)
+			testing.expect(t, g.foe.kind != .None)
+			testing.expect(t, g.foe.hp == g.foe.hp_max)
+			break
+		}
+		g.rations = 1000
+	}
+	testing.expect(t, sprung)
+	testing.expect(t, !maybe_encounter(g)) // one at a time
+	input(g, .Back) // can't be backed out of
+	testing.expect_value(t, g.sub, Sub.Encounter)
+	m := menu(g)
+	testing.expect(t, m.n >= 2 && m.n <= MENU_MAX)
+}
+
+@(test)
+seen_coming_you_can_steer_away :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	met(g, .Monster, 25)
+	g.foe.state = .Distant
+	testing.expect_value(t, menu(g).items[0].cmd, Cmd.Flee)
+	do_cmd(g, .Flee, 0)
+	testing.expect_value(t, g.foe.kind, Foe_Kind.None)
+	testing.expect_value(t, g.sub, Sub.None)
+	testing.expect_value(t, g.hull, hull_max(g))
+}
+
+@(test)
+beating_pirates_pays :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	met(g, .Pirates, 100)
+	money := g.money
+	for _ in 0 ..< 50 {
+		if g.foe.kind == .None {break}
+		do_cmd(g, .Fight, 0)
+	}
+	testing.expect_value(t, g.foe.kind, Foe_Kind.None)
+	testing.expect(t, g.money > money)
+	testing.expect_value(t, g.logbook[g.n_logbook - 1].kind, Log_Kind.Victory)
+}
+
+@(test)
+beaten_by_pirates_you_are_robbed :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	met(g, .Pirates, 0) // a crew that cannot land a blow
+	g.money = 400
+	g.cargo[.Flour] = 10
+	for _ in 0 ..< 200 {
+		if g.foe.kind == .None || g.screen == .Over {break}
+		do_cmd(g, .Fight, 0)
+	}
+	if g.screen != .Over {
+		testing.expect_value(t, g.foe.kind, Foe_Kind.None)
+		testing.expect_value(t, g.money, 200)
+		testing.expect_value(t, g.cargo[.Flour], 5)
+		testing.expect_value(t, g.logbook[g.n_logbook - 1].kind, Log_Kind.Robbed)
+	}
+}
+
+@(test)
+pirates_take_a_bribe_or_a_parley :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	met(g, .Pirates, 25)
+	g.money = 500
+	do_cmd(g, .Bribe, 0)
+	testing.expect_value(t, g.money, 450)
+	testing.expect_value(t, g.foe.kind, Foe_Kind.None)
+	met(g, .Pirates, 100) // a silver tongue always talks its way past
+	do_cmd(g, .Parley, 0)
+	testing.expect_value(t, g.foe.kind, Foe_Kind.None)
+}
+
+@(test)
+a_monster_strikes_the_hull :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	met(g, .Monster, 0)
+	for _ in 0 ..< 500 {
+		if g.screen == .Over {break}
+		do_cmd(g, .Fight, 0)
+	}
+	testing.expect_value(t, g.screen, Screen.Over)
+	testing.expect_value(t, g.outcome, Outcome.Sank)
+}
+
+@(test)
+the_captain_can_fall :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	met(g, .Pirates, 0)
+	g.n_crew = 1 // alone: every wound is the captain's
+	g.foe.strength = 0 // never counted as beaten
+	for _ in 0 ..< 500 {
+		if g.screen == .Over {break}
+		do_cmd(g, .Fight, 0)
+	}
+	testing.expect_value(t, g.outcome, Outcome.Killed)
+}
+
+@(test)
+hunting_a_whale :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	met(g, .Whale, 100)
+	for _ in 0 ..< 50 {
+		if g.foe.kind == .None {break}
+		do_cmd(g, .Fight, 0)
+	}
+	testing.expect(t, g.cargo[.Whale_Oil] >= 4)
+	testing.expect(t, hold_used(g) <= hold_tons(g))
+	// A full hold takes none.
+	met(g, .Whale, 100)
+	g.cargo[.Flour] = hold_tons(g)
+	oil := g.cargo[.Whale_Oil]
+	for _ in 0 ..< 50 {
+		if g.foe.kind == .None {break}
+		do_cmd(g, .Fight, 0)
+	}
+	testing.expect_value(t, g.cargo[.Whale_Oil], oil)
+	// Or let it go.
+	met(g, .Whale, 0)
+	do_cmd(g, .Sail_On, 0)
+	testing.expect_value(t, g.foe.kind, Foe_Kind.None)
+}
+
+@(test)
+trading_with_merfolk :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	met(g, .Merfolk, 100)
+	g.money = 1000
+	g.cargo[.Rope] = 10
+	do_cmd(g, .Parley, 0) // Bargain 100: they warm to you
+	testing.expect(t, g.foe.friendly)
+	do_cmd(g, .Mer_Trade, 1)
+	testing.expect_value(t, g.foe.state, Foe_State.Trading)
+	do_cmd(g, .Mer_Buy, int(Good.Pearls))
+	testing.expect_value(t, g.cargo[.Pearls], 1)
+	testing.expect_value(t, g.money, 1000 - base_value(.Pearls) / 2)
+	money := g.money
+	do_cmd(g, .Mer_Sell, 0)
+	testing.expect_value(t, g.cargo[.Rope], 0)
+	testing.expect_value(t, g.cargo[.Pearls], 1) // they don't buy back their own
+	testing.expect_value(t, g.money, money + 10 * (base_value(.Rope) * 130 / 100))
+	do_cmd(g, .Mer_Trade, 0)
+	do_cmd(g, .Sail_On, 0)
+	testing.expect_value(t, g.foe.kind, Foe_Kind.None)
+}
+
+@(test)
+sea_goods_sell_in_any_port :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	title(g, 5)
+	voyage(g)
+	testing.expect(t, .Pearls not_in g.trades[0])
+	g.cargo[.Pearls] = 3
+	do_cmd(g, .Open, int(Sub.Market))
+	m := menu(g)
+	found := false
+	for k in 0 ..< m.n {if m.items[k].cmd == .Open && m.items[k].arg == int(Sub.Sea_Goods) {found = true}}
+	testing.expect(t, found)
+	testing.expect(t, m.n <= MENU_MAX)
+	do_cmd(g, .Open, int(Sub.Sea_Goods))
+	do_cmd(g, .Pick_Good, int(Good.Pearls))
+	testing.expect_value(t, g.sub, Sub.Trade)
+	do_cmd(g, .Buy, 1) // they can't be bought here
+	testing.expect_value(t, g.cargo[.Pearls], 3)
+	money := g.money
+	do_cmd(g, .Sell, ALL)
+	testing.expect_value(t, g.cargo[.Pearls], 0)
+	testing.expect(t, g.money > money)
+	// No world changes: islands never trade sea goods.
+	for i in 0 ..< g.n_islands {
+		for good in Good.Whale_Oil ..= Good.Coral {testing.expect(t, good not_in g.trades[i])}
+	}
+}
+
+@(test)
+every_encounter_menu_fits :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	for kind in Foe_Kind.Pirates ..= Foe_Kind.Merfolk {
+		for state in Foe_State {
+			for flags in 0 ..< 8 {
+				met(g, kind, 50)
+				g.cargo[.Rope] = 3
+				g.foe.state = state
+				g.foe.parleyed, g.foe.friendly, g.foe.hostile = flags & 1 != 0, flags & 2 != 0, flags & 4 != 0
+				m := menu(g)
+				testing.expect(t, m.n >= 2 && m.n <= MENU_MAX)
+				for k in 0 ..< m.n {testing.expect(t, len(m.items[k].label) < MENU_TEXT)}
+			}
+		}
+	}
+}
+
+@(test)
+encounter_state_round_trips :: proc(t: ^testing.T) {
+	testing.expect_value(t, SAVE_V6_SIZE, 2159) // the older layout keeps the twelve land goods
+	g := new(Game)
+	defer free(g)
+	title(g, 5)
+	voyage(g)
+	do_cmd(g, .Undock, 0)
+	begin_encounter(g, .Merfolk)
+	g.foe.state = .Close
+	g.foe.hp = 7
+	g.foe.parleyed, g.foe.friendly = true, true
+	g.cargo[.Whale_Oil], g.cargo[.Coral] = 4, 2
+	g.cargo[.Pepper] = 3
+	buf: [SAVE_SIZE]u8
+	save_encode(g, &buf)
+	h := new(Game)
+	defer free(h)
+	title(h, 3)
+	testing.expect_value(t, save_decode(h, buf[:]), Load_Error.None)
+	testing.expect(t, h.foe == g.foe)
+	testing.expect(t, h.cargo == g.cargo)
+	do_cmd(h, .Continue, 0)
+	testing.expect_value(t, h.sub, Sub.Encounter) // it waits for you
+
+	bad := buf
+	bad[SAVE_V9_SIZE + 2] = 0 // a foe with no health
+	title(h, 3)
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = buf
+	bad[SAVE_V9_SIZE] = 9 // no such foe
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+
+	// A version 9 save has met nothing and carries no sea goods.
+	v9 := buf
+	v9[3] = 9
+	testing.expect_value(t, save_decode(h, v9[:SAVE_V9_SIZE]), Load_Error.None)
+	testing.expect_value(t, h.foe.kind, Foe_Kind.None)
+	testing.expect_value(t, h.cargo[.Whale_Oil], 0)
+	testing.expect_value(t, h.cargo[.Pepper], 3)
+}

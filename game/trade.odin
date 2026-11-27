@@ -52,7 +52,13 @@ Good :: enum u8 {
 	Dyes,
 	Cutlasses,
 	Pepper,
+	// Sea goods (Phase 8): no island trades them, but every island buys them. They come from whales and merfolk.
+	Whale_Oil,
+	Pearls,
+	Coral,
 }
+
+LAND_GOODS :: int(Good.Pepper) + 1 // the save layout and the island markets cover these twelve
 
 Good_Info :: struct {
 	name:       string,
@@ -74,6 +80,9 @@ GOODS := [Good]Good_Info {
 	.Dyes       = {"Dyes", #partial [Commodity]int{.Wool = 1, .Spice = 1}, 1, 25},
 	.Cutlasses  = {"Cutlasses", #partial [Commodity]int{.Ore = 3, .Timber = 1}, 1, 20},
 	.Pepper     = {"Pepper", #partial [Commodity]int{.Spice = 2}, 1, 20},
+	.Whale_Oil  = {"Whale oil", #partial [Commodity]int{.Fish = 5}, 2, 0},
+	.Pearls     = {"Pearls", #partial [Commodity]int{.Spice = 3}, 1, 0},
+	.Coral      = {"Coral", #partial [Commodity]int{.Spice = 1, .Ore = 1}, 1, 0},
 }
 
 Market :: struct {
@@ -93,14 +102,14 @@ generate_markets :: proc(g: ^Game) {
 		trades: bit_set[Good]
 		for _ in 0 ..< 20 {
 			trades = {}
-			for good in Good {
+			for good in Good.Flour ..= Good.Pepper {
 				if rng_below(&r, 100) < GOODS[good].occurrence {trades += {good}}
 			}
 			if card(trades) >= GOODS_PER_ISLAND_MIN {break}
 		}
 		for card(trades) > GOODS_PER_ISLAND_MAX { 	// drop at random until it fits the menu
 			k := rng_below(&r, card(trades))
-			for good in Good {
+			for good in Good.Flour ..= Good.Pepper {
 				if good not_in trades {continue}
 				if k == 0 {
 					trades -= {good}
@@ -178,7 +187,7 @@ buy :: proc(g: ^Game, good: Good, n: int) -> (count, cost: int) {
 // Sell up to n of a good at the docked island, one at a time. Returns how many were sold and what they fetched.
 sell :: proc(g: ^Game, good: Good, n: int) -> (count, takings: int) {
 	i := g.docked
-	if i == NO_ISLAND || good not_in g.trades[i] {return}
+	if i == NO_ISLAND || (good not_in g.trades[i] && !is_sea_good(good)) {return}
 	for count < n && g.cargo[good] > 0 {
 		p := your_take(g, i, good)
 		if g.money + p > MONEY_MAX {break}

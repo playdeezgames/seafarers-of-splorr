@@ -57,6 +57,8 @@ Sub :: enum u8 {
 	Fare, // one passenger asking for passage (g.pick)
 	Passengers, // the passengers aboard
 	Passenger, // one passenger aboard (g.pick)
+	Encounter, // something met at sea (g.foe)
+	Sea_Goods, // docked: selling whale oil, pearls and coral
 }
 
 // Keyboard and gamepad commands; order matches ACTION in web/index.html.
@@ -81,6 +83,7 @@ Sound :: enum u8 {
 	Win,
 	Bust,
 	Bell,
+	Clash, // a round of blows
 }
 
 Cmd :: enum u8 {
@@ -126,6 +129,15 @@ Cmd :: enum u8 {
 	Take_Fare,
 	Pick_Passenger, // arg: passenger index
 	Put_Ashore,
+	Close_In,
+	Fight,
+	Flee,
+	Parley,
+	Bribe,
+	Sail_On, // leave a whale or merfolk be
+	Mer_Trade, // arg 1 opens the merfolk's wares, 0 closes them
+	Mer_Buy, // arg: Good
+	Mer_Sell,
 }
 
 HEAD_FOR_PAGE :: MENU_MAX - 2 // islands a page when they do not all fit: leaves room for More and Back
@@ -214,6 +226,7 @@ Game :: struct {
 	n_fare_offers: int,
 	passengers: [CABINS_MAX]Passenger,
 	n_passengers: int,
+	foe:        Encounter,
 	muted:      bool, // mirrors the page's mute setting, for the menu label
 	// Requests to the web layer, cleared by it.
 	want_save:  bool,
@@ -262,6 +275,7 @@ start_world :: proc(g: ^Game, seed: u64) {
 	g.ship_type, g.fitted = .Sloop, {}
 	g.hull = hull_max(g)
 	g.n_fare_offers, g.n_passengers = 0, 0
+	g.foe = {}
 	g.n_candidates, g.n_logbook, g.wage_turns, g.log_page = 0, 0, 0, 0
 	if g.n_islands > 0 {
 		if x, y, ok := mooring(g, 0); ok {
@@ -323,7 +337,14 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 					addf(g, &m, .Pick_Good, int(good), "%s %d/%d", GOODS[good].name, your_cost(g, i, good), your_take(g, i, good))
 				}
 			}
+			if carries_sea_goods(g) {add(g, &m, "Sea goods", .Open, int(Sub.Sea_Goods))}
 			addf(g, &m, .Pick_Good, RATIONS, "Rations %d", ration_price(g, i))
+			add(g, &m, "Back", .Back)
+			return
+		case .Sea_Goods:
+			for good in Good.Whale_Oil ..= Good.Coral {
+				if g.cargo[good] > 0 {addf(g, &m, .Pick_Good, int(good), "%s %d (%d)", GOODS[good].name, your_take(g, g.docked, good), g.cargo[good])}
+			}
 			add(g, &m, "Back", .Back)
 			return
 		case .Trade:
@@ -331,6 +352,11 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 				add(g, &m, "Buy 10 rations", .Buy, 1)
 				add(g, &m, "Buy 100", .Buy, 10)
 				add(g, &m, "Buy 500", .Buy, 50)
+			} else if is_sea_good(Good(g.trade_good)) {
+				good := Good(g.trade_good)
+				addf(g, &m, .Sell, 1, "Sell 1 at %d", your_take(g, g.docked, good))
+				add(g, &m, "Sell 10", .Sell, 10)
+				add(g, &m, "Sell all", .Sell, ALL)
 			} else {
 				good := Good(g.trade_good)
 				addf(g, &m, .Buy, 1, "Buy 1 at %d", your_cost(g, g.docked, good))
@@ -391,7 +417,7 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			addf(g, &m, .Vendor_Buy, 5, "Buy %d", 5 * VENDOR_LOT)
 			add(g, &m, "Back", .Back)
 			return
-		case .None, .Heading, .Adjust, .Speed, .Sail, .Head_For, .Dock, .Chart, .Careen, .Book, .Custom, .Logbook:
+		case .None, .Heading, .Adjust, .Speed, .Sail, .Head_For, .Dock, .Chart, .Careen, .Book, .Custom, .Logbook, .Encounter:
 		}
 		ds := g.districts[g.docked] if g.docked != NO_ISLAND else {}
 		add(g, &m, "Cast off", .Undock)
@@ -467,8 +493,10 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			crew_menu(g, &m)
 		case .Passengers, .Passenger:
 			ship_menu(g, &m)
-		case .Ship, .Ships, .Fittings, .Fare:
+		case .Ship, .Ships, .Fittings, .Fare, .Sea_Goods:
 			add(g, &m, "Back", .Back)
+		case .Encounter:
+			encounter_menu(g, &m)
 		case .Book:
 			add(g, &m, "Next good", .Book_Step, 1)
 			add(g, &m, "Previous good", .Book_Step, -1)
@@ -558,6 +586,56 @@ ship_menu :: proc(g: ^Game, m: ^Menu) {
 		if g.screen == .Docked && g.pick < g.n_passengers {put(m, .Put_Ashore, 0, "Put ashore here")}
 	}
 	put(m, .Back, 0, "Back")
+}
+
+carries_sea_goods :: proc(g: ^Game) -> bool {
+	for good in Good.Whale_Oil ..= Good.Coral {if g.cargo[good] > 0 {return true}}
+	return false
+}
+
+// The round menu for whatever was met at sea.
+encounter_menu :: proc(g: ^Game, m: ^Menu) {
+	put :: proc(m: ^Menu, cmd: Cmd, arg: int, label: string) {
+		assert(m.n < MENU_MAX, "menu overflow")
+		m.items[m.n] = {label, cmd, arg}
+		m.n += 1
+	}
+	f := &g.foe
+	if f.state == .Distant {
+		put(m, .Flee, 0, "Steer away")
+		put(m, .Close_In, 0, "Close with it")
+		return
+	}
+	switch f.kind {
+	case .Pirates:
+		put(m, .Fight, 0, "Fight")
+		put(m, .Flee, 0, "Flee")
+		if !f.parleyed {put(m, .Parley, 0, "Parley")}
+		put(m, .Bribe, 0, fmt.bprintf(g.menu_text[m.n][:], "Pay them %d", bribe_cost(g)))
+	case .Monster:
+		put(m, .Fight, 0, "Fight")
+		put(m, .Flee, 0, "Flee")
+	case .Whale:
+		put(m, .Fight, 0, "Hunt it")
+		put(m, .Sail_On, 0, "Let it go")
+	case .Merfolk:
+		if f.hostile {
+			put(m, .Fight, 0, "Fight")
+			put(m, .Flee, 0, "Flee")
+		} else if f.state == .Trading {
+			put(m, .Mer_Buy, int(Good.Pearls), fmt.bprintf(g.menu_text[m.n][:], "Buy a pearl, %d", merfolk_sells(g, .Pearls)))
+			put(m, .Mer_Buy, int(Good.Coral), fmt.bprintf(g.menu_text[m.n][:], "Buy coral, %d", merfolk_sells(g, .Coral)))
+			if v := merfolk_offer(g); v > 0 {put(m, .Mer_Sell, 0, fmt.bprintf(g.menu_text[m.n][:], "Sell cargo, %d", v))}
+			put(m, .Mer_Trade, 0, "Done trading")
+		} else {
+			put(m, .Mer_Trade, 1, "Trade")
+			if !f.parleyed {put(m, .Parley, 0, "Parley")}
+			put(m, .Fight, 0, "Attack them")
+			put(m, .Sail_On, 0, "Sail on")
+		}
+	case .None:
+		put(m, .Sail_On, 0, "Sail on")
+	}
 }
 
 refusal_text :: proc(r: Refusal) -> string {
@@ -775,6 +853,60 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		if arg < 0 || arg >= g.n_passengers {return}
 		g.pick = arg
 		open(g, .Passenger)
+	case .Close_In:
+		if g.sub != .Encounter || g.foe.state != .Distant {return}
+		g.foe.state = .Close
+		g.cursor = 0
+	case .Fight:
+		if g.sub != .Encounter || g.foe.state == .Distant || g.foe.state == .Trading {return}
+		if g.foe.kind == .Merfolk {g.foe.hostile = true}
+		sound(g, .Clash)
+		fight_round(g)
+		g.cursor = 0
+		g.want_save = true
+	case .Flee:
+		if g.sub != .Encounter {return}
+		flee(g)
+		g.want_save = true
+	case .Parley:
+		if g.sub != .Encounter || (g.foe.kind != .Pirates && g.foe.kind != .Merfolk) || g.foe.parleyed || g.foe.hostile {return}
+		if g.foe.kind == .Pirates {g.foe.parleyed = true}
+		parley(g)
+		g.cursor = 0
+		g.want_save = true
+	case .Bribe:
+		if g.sub != .Encounter || g.foe.kind != .Pirates || g.foe.state != .Close {return}
+		if !bribe(g) {
+			sound(g, .Deny)
+			logf(g, "You can't pay that.")
+		}
+		g.want_save = true
+	case .Sail_On:
+		if g.sub != .Encounter || g.foe.kind == .Pirates || g.foe.kind == .Monster || g.foe.hostile {return}
+		logf(g, "You sail on.")
+		end_encounter(g)
+		g.want_save = true
+	case .Mer_Trade:
+		if g.sub != .Encounter || g.foe.kind != .Merfolk || g.foe.hostile || g.foe.state == .Distant {return}
+		g.foe.state = arg == 1 ? .Trading : .Close
+		g.cursor = 0
+	case .Mer_Buy:
+		if g.sub != .Encounter || g.foe.state != .Trading || (arg != int(Good.Pearls) && arg != int(Good.Coral)) {return}
+		price := merfolk_sells(g, Good(arg))
+		if !merfolk_buy(g, Good(arg)) {
+			sound(g, .Deny)
+			logf(g, "Not enough money or room.")
+			return
+		}
+		sound(g, .Coins)
+		logf(g, "Bought %s for %d.", GOODS[Good(arg)].name, price)
+		g.want_save = true
+	case .Mer_Sell:
+		if g.sub != .Encounter || g.foe.state != .Trading {return}
+		v := merfolk_sell_all(g)
+		sound(g, .Coins)
+		logf(g, "Sold them your cargo: %d.", v)
+		g.want_save = true
 	case .Put_Ashore:
 		if g.sub != .Passenger || !put_ashore(g, g.pick) {return}
 		logf(g, "Put ashore, unpaid.")
@@ -783,7 +915,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 	case .Continue:
 		if !g.has_voyage {return}
 		g.screen = g.docked == NO_ISLAND ? .Sea : .Docked
-		g.sub = .None
+		g.sub = g.foe.kind != .None && g.screen == .Sea ? .Encounter : .None // an encounter waits for you
 		g.cursor = 0
 	case .Sound_Toggle:
 		g.want_mute = true
@@ -796,7 +928,10 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		open(g, Sub(arg))
 	case .Back:
 		#partial switch g.sub {
-		case .Trade: open(g, .Market)
+		case .Trade:
+			if g.trade_good >= 0 && is_sea_good(Good(g.trade_good)) {open(g, .Sea_Goods)} else {open(g, .Market)}
+		case .Sea_Goods: open(g, .Market)
+		case .Encounter: sound(g, .Deny) // settle it first
 		case .Offer, .Carried: open(g, .Deliveries)
 		case .Carried_Detail: open(g, .Carried)
 		case .Book, .Logbook: open(g, .Chart)
@@ -902,12 +1037,14 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		g.want_save = true
 	case .Pick_Good:
 		if g.docked == NO_ISLAND {return}
-		if arg != RATIONS && (arg < 0 || arg > int(max(Good)) || Good(arg) not_in g.trades[g.docked]) {return}
+		if arg != RATIONS && (arg < 0 || arg > int(max(Good))) {return}
+		if arg != RATIONS && Good(arg) not_in g.trades[g.docked] && !(is_sea_good(Good(arg)) && g.cargo[Good(arg)] > 0) {return}
 		g.trade_good = arg
 		open(g, .Trade)
 	case .Buy:
 		if g.docked == NO_ISLAND || g.sub != .Trade {return}
 		n, cost: int
+		if g.trade_good != RATIONS && is_sea_good(Good(g.trade_good)) {return}
 		if g.trade_good == RATIONS {
 			n, cost = buy_rations(g, arg)
 			n *= RATION_LOT
@@ -1005,7 +1142,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		logf(g, "Folded.")
 		g.cursor = 0
 	case .Book_Step:
-		g.book_good = Good((int(g.book_good) + len(Good) + (arg < 0 ? -1 : 1)) % len(Good))
+		g.book_good = Good((int(g.book_good) + LAND_GOODS + (arg < 0 ? -1 : 1)) % LAND_GOODS)
 	case .Undock:
 		if g.docked != NO_ISLAND {logf(g, "Cast off from %s.", island_name(g, g.docked))}
 		g.docked = NO_ISLAND
@@ -1069,6 +1206,15 @@ sail :: proc(g: ^Game, turns: int) {
 			logf(g, "Alongside %s.", island_name(g, g.course))
 			g.course = NO_ISLAND
 			open(g, .None) // so Dock is on the menu
+			return
+		}
+		if g.ship.speed > 0 && maybe_encounter(g) {
+			sound(g, .Sighted)
+			if g.foe.state == .Distant {
+				logf(g, "%s ahead!", FOES[g.foe.kind].name)
+			} else {
+				logf(g, "%s upon you!", FOES[g.foe.kind].name)
+			}
 			return
 		}
 		if t == turns - 1 {

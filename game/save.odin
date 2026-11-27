@@ -6,6 +6,13 @@ import "core:math"
 // world is rebuilt from the seed, so a new generator makes an old save describe a different sea). An older version is
 // refused with Load_Error.Version and the page says so.
 //
+// Version 10 (Phase 8, things at sea) is version 9 followed by:
+//  u8 x 4      the encounter: kind (0 for none), state, health, health at the start
+//  u16         your fighters' health when it began
+//  u8          flags: 1 parleyed, 2 friendly, 4 hostile
+//  u16 x 3     sea goods aboard: whale oil, pearls, coral
+// The save layout before this keeps the first twelve goods only. Older versions load with nothing met and no sea goods.
+//
 // Version 9 (Phase 7, the shipyard) is version 8 followed by:
 //  u8          ship type
 //  u8 x 4      fittings, by Fitting
@@ -66,16 +73,18 @@ import "core:math"
 // 34  u8     speed (percent)
 // 35  u8     docked island, 255 at sea
 // 36  u64    charted islands, bit i for island i
-SAVE_VERSION :: 9
+SAVE_VERSION :: 10
 SAVE_V4_SIZE :: 82 + ISLAND_MAX * len(Commodity) * 4
 SAVE_V5_SIZE :: SAVE_V4_SIZE + 2 * (1 + 12 * 3) + 1 + 2
-SAVE_V6_SIZE :: SAVE_V5_SIZE + ISLAND_MAX * (2 + 2 * len(Good))
+SAVE_V6_SIZE :: SAVE_V5_SIZE + ISLAND_MAX * (2 + 2 * LAND_GOODS)
 MEMBER_BYTES :: 15
 ENTRY_BYTES :: 8
 SAVE_V7_SIZE :: SAVE_V6_SIZE + 1 + CREW_MAX * MEMBER_BYTES + 1 + CANDIDATES_MAX * MEMBER_BYTES + 2 + 1 + LOGBOOK_MAX * ENTRY_BYTES
 SAVE_V8_SIZE :: SAVE_V7_SIZE + 1
 PASSENGER_BYTES :: 10
-SAVE_SIZE :: SAVE_V8_SIZE + 1 + len(Fitting) + 2 + 1 + FARE_OFFERS_MAX * PASSENGER_BYTES + 1 + CABINS_MAX * PASSENGER_BYTES
+SAVE_V9_SIZE :: SAVE_V8_SIZE + 1 + len(Fitting) + 2 + 1 + FARE_OFFERS_MAX * PASSENGER_BYTES + 1 + CABINS_MAX * PASSENGER_BYTES
+SEA_GOODS :: len(Good) - LAND_GOODS
+SAVE_SIZE :: SAVE_V9_SIZE + 4 + 2 + 1 + 2 * SEA_GOODS
 NOT_SEEN :: 0xFFFF
 PRICE_MAX :: 60_000
 SAVE_V3_SIZE :: 58
@@ -113,7 +122,7 @@ save_encode :: proc(g: ^Game, buf: ^[SAVE_SIZE]u8) {
 	buf[53] = u8(g.health)
 	put_u16(buf[54:], u16(g.foul[.Port]))
 	put_u16(buf[56:], u16(g.foul[.Starboard]))
-	for good in Good {put_u16(buf[58 + 2 * int(good):], u16(g.cargo[good]))}
+	for good in Good.Flour ..= Good.Pepper {put_u16(buf[58 + 2 * int(good):], u16(g.cargo[good]))}
 	at5 := SAVE_V4_SIZE
 	put_deliveries(buf[at5:], g.offers[:g.n_offers])
 	at5 += 1 + 12 * 3
@@ -125,8 +134,8 @@ save_encode :: proc(g: ^Game, buf: ^[SAVE_SIZE]u8) {
 	for i in 0 ..< ISLAND_MAX {
 		seen := g.seen[i]
 		put_u16(buf[at6:], seen.turn == NEVER_SEEN || i >= g.n_islands ? NOT_SEEN : u16(seen.turn))
-		for good in Good {put_u16(buf[at6 + 2 + 2 * int(good):], u16(clamp(seen.price[good], 0, PRICE_MAX)))}
-		at6 += 2 + 2 * len(Good)
+		for good in Good.Flour ..= Good.Pepper {put_u16(buf[at6 + 2 + 2 * int(good):], u16(clamp(seen.price[good], 0, PRICE_MAX)))}
+		at6 += 2 + 2 * LAND_GOODS
 	}
 	at7 := SAVE_V6_SIZE
 	buf[at7] = u8(g.n_crew)
@@ -160,6 +169,12 @@ save_encode :: proc(g: ^Game, buf: ^[SAVE_SIZE]u8) {
 	put_passengers(buf[at9:], g.fare_offers[:g.n_fare_offers])
 	at9 += 1 + FARE_OFFERS_MAX * PASSENGER_BYTES
 	put_passengers(buf[at9:], g.passengers[:g.n_passengers])
+	at10 := SAVE_V9_SIZE
+	f := g.foe
+	buf[at10], buf[at10 + 1], buf[at10 + 2], buf[at10 + 3] = u8(f.kind), u8(f.state), u8(f.hp), u8(f.hp_max)
+	put_u16(buf[at10 + 4:], u16(f.strength))
+	buf[at10 + 6] = (f.parleyed ? 1 : 0) | (f.friendly ? 2 : 0) | (f.hostile ? 4 : 0)
+	for k in 0 ..< SEA_GOODS {put_u16(buf[at10 + 7 + 2 * k:], u16(g.cargo[Good(LAND_GOODS + k)]))}
 	at := 82
 	for i in 0 ..< ISLAND_MAX {
 		for c in Commodity {
@@ -176,7 +191,7 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 	if data[0] != 'S' || data[1] != 'O' || data[2] != 'S' {return .Magic}
 	version := data[3]
 	if version < 2 || version > SAVE_VERSION {return .Version} // before the size: versions differ in size
-	sizes := [10]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_V4_SIZE, SAVE_V5_SIZE, SAVE_V6_SIZE, SAVE_V7_SIZE, SAVE_V8_SIZE, SAVE_SIZE}
+	sizes := [11]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_V4_SIZE, SAVE_V5_SIZE, SAVE_V6_SIZE, SAVE_V7_SIZE, SAVE_V8_SIZE, SAVE_V9_SIZE, SAVE_SIZE}
 	if len(data) != sizes[version] {return .Size}
 	turn := get_u32(data[20:])
 	turn_saved := turn
@@ -240,13 +255,13 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 				// with the previous voyage's turn; read a seen turn from the future as seen now.
 				t.seen[i].turn = min(turn, int(turn_saved))
 			}
-			for good in Good {
+			for good in Good.Flour ..= Good.Pepper {
 				p := int(get_u16(data[at + 2 + 2 * int(good):]))
 				if p > PRICE_MAX {return .Range}
 				traded := i < t.n_islands && good in t.trades[i]
 				t.seen[i].price[good] = traded && turn != NOT_SEEN ? p : 0 // only what the island trades
 			}
-			at += 2 + 2 * len(Good)
+			at += 2 + 2 * LAND_GOODS
 		}
 	}
 	if version >= 7 {
@@ -323,7 +338,7 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 	if version < 4 {
 		t.money = START_MONEY
 	} else {
-		for good in Good {
+		for good in Good.Flour ..= Good.Pepper {
 			n := int(get_u16(data[58 + 2 * int(good):]))
 			if n > CARGO_MAX {return .Range}
 			t.cargo[good] = n
@@ -340,6 +355,31 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 				if sup < MARKET_MIN || sup > MARKET_MAX || dem < MARKET_MIN || dem > MARKET_MAX {return .Range}
 				t.markets[i].supply[c], t.markets[i].demand[c] = sup, dem
 			}
+		}
+	}
+	if version >= 10 {
+		at := SAVE_V9_SIZE
+		if data[at] > u8(max(Foe_Kind)) || data[at + 1] > u8(max(Foe_State)) || data[at + 6] > 7 {return .Range}
+		f := Encounter {
+			kind     = Foe_Kind(data[at]),
+			state    = Foe_State(data[at + 1]),
+			hp       = int(data[at + 2]),
+			hp_max   = int(data[at + 3]),
+			strength = int(get_u16(data[at + 4:])),
+			parleyed = data[at + 6] & 1 != 0,
+			friendly = data[at + 6] & 2 != 0,
+			hostile  = data[at + 6] & 4 != 0,
+		}
+		if f.kind != .None {
+			if t.docked != NO_ISLAND || f.hp < 1 || f.hp > f.hp_max {return .Range}
+			if f.state == .Trading && f.kind != .Merfolk {return .Range}
+			t.foe = f
+			t.sub = .Encounter
+		}
+		for k in 0 ..< SEA_GOODS {
+			n := int(get_u16(data[at + 7 + 2 * k:]))
+			if n > CARGO_MAX {return .Range}
+			t.cargo[Good(LAND_GOODS + k)] = n
 		}
 	}
 	if hold_used(t) > hold_tons(t) {return .Range} // after the ship and the cargo are both read
