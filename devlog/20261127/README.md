@@ -142,3 +142,20 @@ Not posted. A working record.
   deadlines far too long. Such a save would also have been refused on loading.
 - The world now starts its clock at 0 before anything is stamped, and a save with a price seen "in the future" loads
   with it read as seen at the saved turn. 67 native tests.
+
+## Phase 7, the shipyard (same day)
+
+- The user chose **ship types and fittings**, approved Claude's draft list and prices, chose that **nothing damages
+  the hull yet** (fights come in Phase 8, storms in Phase 9), and **passengers like deliveries**.
+- **Ships:** the Sloop you start with (hold 50, hull 100, speed 100%, price 600), the Junk the C++ game had (60, 120,
+  125%, 1,500) and a Brig (100, 200, 90%, 3,000). Your ship goes in part exchange at half its price, and your
+  fittings move across.
+- **Fittings:** extra hold (+25 tons, two at most, 400 each), copper sheathing (halves fouling, 600), passenger cabins
+  (one passenger each, three at most, 300 each), stout timbers (+50 hull, 500). Repairs cost 2 a hull point.
+- **Shipyards** on 40% of islands (their own stream, so older worlds keep their districts). The docked menu was full,
+  so Careen moved into a new **Ship** menu, which also holds the shipyard where there is one.
+- **Passengers** ask for passage at the delivery service when a cabin is free: a destination, a fare and a deadline
+  (half fare when late), and they eat a ration a turn. Their islands show on the chart and in Head for like
+  deliveries.
+- The hull is drawn on the HUD; a ship that sinks ends the voyage (nothing sinks one yet).
+- Save version 9 (59 bytes more). Older saves get a sloop with a sound hull. 73 native tests.

@@ -12,6 +12,7 @@ District :: enum u8 {
 	Street_Vendor,
 	Dark_Alley,
 	Tavern, // Phase 6: sailors for hire; rolled from its own stream so older worlds keep their districts
+	Shipyard, // Phase 7: repairs, ships and fittings; its own stream too
 }
 
 DISTRICT_CHANCE := [District]int {
@@ -19,6 +20,7 @@ DISTRICT_CHANCE := [District]int {
 	.Street_Vendor    = 60,
 	.Dark_Alley       = 40,
 	.Tavern           = TAVERN_CHANCE,
+	.Shipyard         = SHIPYARD_CHANCE,
 }
 
 CARRY_MAX :: 3
@@ -49,13 +51,17 @@ generate_districts :: proc(g: ^Game) {
 	for i in 0 ..< g.n_islands {
 		g.districts[i] = {}
 		for d in District {
-			if d == .Tavern {continue}
+			if d == .Tavern || d == .Shipyard {continue}
 			if rng_below(&r, 100) < DISTRICT_CHANCE[d] {g.districts[i] += {d}}
 		}
 	}
 	t := rng_make(g.seed ~ 0x7A_BE_42_17)
 	for i in 0 ..< g.n_islands {
 		if rng_below(&t, 100) < DISTRICT_CHANCE[.Tavern] {g.districts[i] += {.Tavern}}
+	}
+	y := rng_make(g.seed ~ 0x5E_1F_A2_D9)
+	for i in 0 ..< g.n_islands {
+		if rng_below(&y, 100) < DISTRICT_CHANCE[.Shipyard] {g.districts[i] += {.Shipyard}}
 	}
 }
 
@@ -134,6 +140,9 @@ complete_deliveries :: proc(g: ^Game) -> (count, paid: int) {
 is_destination :: proc(g: ^Game, i: int) -> bool {
 	for k in 0 ..< g.n_carried {
 		if g.carried[k].to == i {return true}
+	}
+	for k in 0 ..< g.n_passengers {
+		if g.passengers[k].to == i {return true}
 	}
 	return false
 }

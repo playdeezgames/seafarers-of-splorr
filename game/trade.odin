@@ -10,7 +10,7 @@ import "core:math"
 
 START_MONEY :: 250
 MONEY_MAX :: 1_000_000_000
-HOLD_TONS :: 50
+HOLD_TONS :: 50 // the sloop's; see hold_tons
 CARGO_MAX :: 10_000 // per good; far above what a hold can carry
 GOODS_PER_ISLAND_MIN :: 2
 GOODS_PER_ISLAND_MAX :: 6
@@ -165,7 +165,7 @@ buy :: proc(g: ^Game, good: Good, n: int) -> (count, cost: int) {
 	if i == NO_ISLAND || good not_in g.trades[i] {return}
 	for count < n {
 		p := your_cost(g, i, good)
-		if p > g.money || hold_used(g) + GOODS[good].tons > HOLD_TONS || g.cargo[good] >= CARGO_MAX {break}
+		if p > g.money || hold_used(g) + GOODS[good].tons > hold_tons(g) || g.cargo[good] >= CARGO_MAX {break}
 		g.money -= p
 		g.cargo[good] += 1
 		cost += p

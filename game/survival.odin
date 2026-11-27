@@ -19,12 +19,13 @@ Outcome :: enum u8 {
 	None,
 	Retired,
 	Starved,
+	Sank, // the hull gave out (from Phase 8's fights and Phase 9's storms)
 }
 
 // The ship's speed after fouling, in percent of full sail.
 effective_speed :: proc(g: ^Game) -> f32 {
 	foul := f32(g.foul[.Port] + g.foul[.Starboard]) / 10000
-	return f32(g.ship.speed) * (1 - foul) * speed_factor(g)
+	return f32(g.ship.speed) * (1 - foul) * speed_factor(g) * ship_speed(g)
 }
 
 // How clean one side of the hull is, 0 ..= 100 percent.
@@ -35,7 +36,7 @@ hull_clean :: proc(g: ^Game, s: Side) -> int {
 // One turn passes: everyone aboard eats a ration, the hull fouls if under way, wages mount, and the voyage may end.
 // Returns false when it ended.
 tick :: proc(g: ^Game, under_way: bool) -> bool {
-	eaters := max(g.n_crew, 1)
+	eaters := max(g.n_crew, 1) + g.n_passengers
 	if g.rations >= eaters {
 		g.rations -= eaters
 		g.satiety = min(g.satiety + 1, STAT_MAX)
@@ -98,6 +99,9 @@ end_voyage :: proc(g: ^Game, o: Outcome) {
 	case .Starved:
 		sound(g, .Lose)
 		logf(g, "You starved at sea.")
+	case .Sank:
+		sound(g, .Lose)
+		logf(g, "Your ship went down.")
 	case .None:
 	}
 }

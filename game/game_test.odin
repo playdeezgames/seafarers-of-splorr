@@ -1691,3 +1691,217 @@ a_second_voyage_starts_at_turn_zero :: proc(t: ^testing.T) {
 	title(h, 3)
 	testing.expect_value(t, save_decode(h, buf[:]), Load_Error.None)
 }
+
+// Phase 7: the shipyard.
+
+// Docked at a home port with a shipyard and a delivery service, money to spend.
+shipyard :: proc(g: ^Game) {
+	title(g, 71)
+	voyage(g)
+	g.districts[0] = {.Shipyard, .Delivery_Service}
+	g.money = 10_000
+}
+
+@(test)
+the_ship_menu_and_the_shipyard :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	shipyard(g)
+	m := menu(g)
+	found := -1
+	for k in 0 ..< m.n {if m.items[k].cmd == .Open && m.items[k].arg == int(Sub.Ship) {found = k}}
+	testing.expect(t, found >= 0)
+	choose(g, found)
+	m = menu(g)
+	testing.expect_value(t, m.items[0].cmd, Cmd.Careen)
+	testing.expect_value(t, m.n, 5) // two careens, Ships, Fittings, Back (no repair: the hull is sound)
+	g.districts[0] = {}
+	testing.expect_value(t, menu(g).n, 3) // careening only, without a shipyard
+}
+
+@(test)
+buying_a_ship_and_fittings :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	shipyard(g)
+	testing.expect_value(t, g.ship_type, Ship_Type.Sloop)
+	testing.expect_value(t, hold_tons(g), 50)
+	testing.expect_value(t, g.hull, 100)
+	do_cmd(g, .Open, int(Sub.Ship))
+	do_cmd(g, .Open, int(Sub.Fittings))
+	do_cmd(g, .Fit, int(Fitting.Extra_Hold))
+	do_cmd(g, .Fit, int(Fitting.Extra_Hold))
+	do_cmd(g, .Fit, int(Fitting.Extra_Hold)) // at most two
+	testing.expect_value(t, g.fitted[.Extra_Hold], 2)
+	testing.expect_value(t, hold_tons(g), 100)
+	testing.expect_value(t, g.money, 10_000 - 800)
+	do_cmd(g, .Fit, int(Fitting.Timbers))
+	testing.expect_value(t, g.hull, 150)
+	do_cmd(g, .Fit, int(Fitting.Copper))
+	testing.expect_value(t, foul_per_turn(g), (FOUL_PER_TURN + 1) / 2)
+
+	// A new ship: part exchange at half price, fittings carried across, a sound hull.
+	do_cmd(g, .Back, 0)
+	do_cmd(g, .Open, int(Sub.Ships))
+	money := g.money
+	do_cmd(g, .Buy_Ship, int(Ship_Type.Brig))
+	testing.expect_value(t, g.ship_type, Ship_Type.Brig)
+	testing.expect_value(t, g.money, money - (3000 - 300))
+	testing.expect_value(t, hold_tons(g), 150)
+	testing.expect_value(t, g.hull, 250)
+	testing.expect(t, near(ship_speed(g), 0.9))
+	testing.expect_value(t, g.logbook[g.n_logbook - 1].kind, Log_Kind.New_Ship)
+
+	// Not into a ship too small for the cargo.
+	g.cargo[.Flour] = 120
+	testing.expect_value(t, buy_ship(g, .Sloop), Refusal.Hold)
+	g.cargo[.Flour] = 0
+	g.money = 0
+	testing.expect_value(t, buy_ship(g, .Junk), Refusal.None) // the brig is taken for 1500: an even swap
+	testing.expect_value(t, buy_ship(g, .Brig), Refusal.Money) // and back costs 2250
+}
+
+@(test)
+repairs_and_sinking :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	shipyard(g)
+	damage_hull(g, 30)
+	testing.expect_value(t, g.hull, 70)
+	testing.expect_value(t, repair_cost(g), 60)
+	do_cmd(g, .Open, int(Sub.Ship))
+	testing.expect_value(t, menu(g).items[2].cmd, Cmd.Repair)
+	g.money = 21 // mends what it can pay for
+	do_cmd(g, .Repair, 0)
+	testing.expect_value(t, g.hull, 80)
+	testing.expect_value(t, g.money, 1)
+	g.money = 1000
+	do_cmd(g, .Repair, 0)
+	testing.expect_value(t, g.hull, 100)
+	g.districts[0] = {}
+	damage_hull(g, 10)
+	testing.expect_value(t, repair(g), 0) // only at a shipyard
+	damage_hull(g, 1000)
+	testing.expect_value(t, g.screen, Screen.Over)
+	testing.expect_value(t, g.outcome, Outcome.Sank)
+}
+
+@(test)
+passengers_like_deliveries :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	shipyard(g)
+	make_fare_offers(g)
+	testing.expect_value(t, g.n_fare_offers, 0) // no cabins, no passengers
+	do_cmd(g, .Open, int(Sub.Ship))
+	do_cmd(g, .Open, int(Sub.Fittings))
+	do_cmd(g, .Fit, int(Fitting.Cabin))
+	testing.expect_value(t, g.n_fare_offers, 1) // one free cabin
+	do_cmd(g, .Fit, int(Fitting.Cabin))
+	testing.expect_value(t, g.n_fare_offers, FARE_OFFERS_MAX)
+	do_cmd(g, .Back, 0)
+	do_cmd(g, .Back, 0)
+	do_cmd(g, .Open, int(Sub.Deliveries))
+	m := menu(g)
+	testing.expect(t, m.n <= MENU_MAX)
+	testing.expect_value(t, m.items[g.n_offers].cmd, Cmd.Pick_Fare)
+	p := g.fare_offers[0]
+	do_cmd(g, .Pick_Fare, 0)
+	do_cmd(g, .Take_Fare, 0)
+	testing.expect_value(t, g.n_passengers, 1)
+	testing.expect(t, is_destination(g, p.to))
+	testing.expect(t, g.islands[p.to].charted)
+
+	// They eat.
+	do_cmd(g, .Undock, 0)
+	testing.expect_value(t, g.n_fare_offers, 0)
+	do_cmd(g, .Set_Speed, 0)
+	rations := g.rations
+	do_cmd(g, .Sail, 1)
+	testing.expect_value(t, g.rations, rations - 2)
+
+	// They pay on arrival: full fare by the due turn, half after.
+	g.passengers[0].due = g.turn - 1
+	x, y, ok := mooring(g, p.to)
+	testing.expect(t, ok)
+	g.ship.x, g.ship.y = x, y
+	money := g.money
+	do_cmd(g, .Dock, p.to)
+	testing.expect_value(t, g.docked, p.to)
+	testing.expect_value(t, g.n_passengers, 0)
+	testing.expect_value(t, g.money, money + p.fare / 2)
+	testing.expect_value(t, g.logbook[g.n_logbook - 1].kind, Log_Kind.Passage)
+}
+
+@(test)
+every_ship_menu_fits :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	shipyard(g)
+	g.fitted = {.Extra_Hold = 2, .Copper = 1, .Cabin = 3, .Timbers = 1}
+	g.ship_type = .Brig
+	g.hull = 1
+	make_fare_offers(g)
+	g.passengers[0] = {name_seed = 77, from = 0, to = 1, fare = 9999, due = 5}
+	g.n_passengers = 1
+	for s in Sub {
+		g.sub = s
+		g.pick = 0
+		m := menu(g)
+		testing.expect(t, m.n >= 1 && m.n <= MENU_MAX)
+		for k in 0 ..< m.n {testing.expect(t, len(m.items[k].label) < MENU_TEXT)}
+	}
+}
+
+@(test)
+ship_state_round_trips :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	shipyard(g)
+	g.ship_type = .Junk
+	g.fitted = #partial [Fitting]int{.Extra_Hold = 1, .Cabin = 2}
+	g.hull = 77
+	make_fare_offers(g)
+	g.passengers[0] = {name_seed = 77, from = 0, to = 1, fare = 50, due = 30}
+	g.n_passengers = 1
+	g.cargo[.Flour] = 80 // more than a sloop holds: fine on a junk with an extra hold
+	buf: [SAVE_SIZE]u8
+	save_encode(g, &buf)
+	h := new(Game)
+	defer free(h)
+	title(h, 3)
+	testing.expect_value(t, save_decode(h, buf[:]), Load_Error.None)
+	testing.expect_value(t, h.ship_type, Ship_Type.Junk)
+	testing.expect(t, h.fitted == g.fitted)
+	testing.expect_value(t, h.hull, 77)
+	testing.expect_value(t, h.n_fare_offers, g.n_fare_offers)
+	testing.expect(t, h.fare_offers == g.fare_offers)
+	testing.expect_value(t, h.n_passengers, 1)
+	testing.expect(t, h.passengers[0] == g.passengers[0])
+
+	at := SAVE_V8_SIZE
+	bad := buf
+	bad[at] = 9 // no such ship
+	title(h, 3)
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = buf
+	bad[at + 1] = 3 // three extra holds
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = buf
+	put_u16(bad[at + 1 + len(Fitting):], 500) // past the hull's most
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = buf
+	bad[at + 1 + int(Fitting.Cabin)] = 0 // a passenger with no cabin
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	testing.expect(t, !h.has_voyage)
+
+	// A version 8 save gets a sloop with a sound hull.
+	g.cargo[.Flour] = 0
+	save_encode(g, &buf)
+	v8 := buf
+	v8[3] = 8
+	testing.expect_value(t, save_decode(h, v8[:SAVE_V8_SIZE]), Load_Error.None)
+	testing.expect_value(t, h.ship_type, Ship_Type.Sloop)
+	testing.expect_value(t, h.hull, SHIPS[.Sloop].hull)
+	testing.expect_value(t, h.n_passengers, 0)
+}

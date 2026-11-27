@@ -21,8 +21,8 @@
   Keys: arrows or W/S, Enter, Esc, 1 to 9, M to mute.<br>
   <span class="ll-only" hidden><a href="#" id="feedback-link">Send feedback</a> · </span><a href="https://thegrumpygamedev.itch.io/">itch.io</a> · <a href="https://playdeezgames.github.io/oeuvre-of-splorr/">more games</a>
 </footer>
-<script type="text/javascript" src="odin.js?v=4d8241b-1795800977"></script>
-<script src="lootlocker.js?v=4d8241b-1795800977"></script>
+<script type="text/javascript" src="odin.js?v=fa4086b-1795803055"></script>
+<script src="lootlocker.js?v=fa4086b-1795803055"></script>
 <script>
   // Feedback through the shared SPLORR!! LootLocker kit (splorr/Tech/LootLocker.md in the vault). This game has no
   // LootLocker game yet: until domain and key are filled in and the console has Game feedback categories, the
@@ -60,12 +60,12 @@
   fit();
 
   const tiles = new Image();
-  tiles.src = "natural.png?v=4d8241b-1795800977"; // Bountiful Bits Natural, coloured, no background: 10 by 10 tiles, no gaps
+  tiles.src = "natural.png?v=fa4086b-1795803055"; // Bountiful Bits Natural, coloured, no background: 10 by 10 tiles, no gaps
 
   // Bitmap font: m6x11, ASCII 32..126 in a 16x6 grid of 10x14 cells, 11 rows above the baseline.
   const FONT_W = 10, FONT_H = 14, FONT_BASE = 11;
   const font = new Image();
-  font.src = "font.png?v=4d8241b-1795800977";
+  font.src = "font.png?v=fa4086b-1795803055";
   const fontAdvance = [];
   const fontTinted = new Map();
   font.onload = () => {
@@ -256,8 +256,8 @@
   };
   requestAnimationFrame(pollPad);
 
-  // 4d8241b-1795800977 is stamped by tools/build.sh so a new build is never mixed with cached old files.
-  odin.runWasm("game.wasm?v=4d8241b-1795800977", null, {
+  // fa4086b-1795803055 is stamped by tools/build.sh so a new build is never mixed with cached old files.
+  odin.runWasm("game.wasm?v=fa4086b-1795803055", null, {
     canvas: {
       fill_rect: (x, y, w, h, rgb, alpha) => {
         ctx.globalAlpha = alpha; ctx.fillStyle = css(rgb); ctx.fillRect(x, y, w, h); ctx.globalAlpha = 1;

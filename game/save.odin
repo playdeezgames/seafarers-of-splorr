@@ -6,6 +6,15 @@ import "core:math"
 // world is rebuilt from the seed, so a new generator makes an old save describe a different sea). An older version is
 // refused with Load_Error.Version and the page says so.
 //
+// Version 9 (Phase 7, the shipyard) is version 8 followed by:
+//  u8          ship type
+//  u8 x 4      fittings, by Fitting
+//  u16         hull points
+//  u8, 2 x p   passengers asking for passage at the docked island: count, then two slots
+//  u8, 3 x p   passengers aboard: count, then three slots
+// A passenger is 10 bytes: name seed u32, from u8, to u8, fare u16, due turn u16.
+// Older versions load with a sloop, no fittings and a sound hull.
+//
 // Version 8 (piloting) is version 7 followed by one byte: the island Head for is piloting to, 255 for none. Older
 // versions load with no course.
 //
@@ -57,14 +66,16 @@ import "core:math"
 // 34  u8     speed (percent)
 // 35  u8     docked island, 255 at sea
 // 36  u64    charted islands, bit i for island i
-SAVE_VERSION :: 8
+SAVE_VERSION :: 9
 SAVE_V4_SIZE :: 82 + ISLAND_MAX * len(Commodity) * 4
 SAVE_V5_SIZE :: SAVE_V4_SIZE + 2 * (1 + 12 * 3) + 1 + 2
 SAVE_V6_SIZE :: SAVE_V5_SIZE + ISLAND_MAX * (2 + 2 * len(Good))
 MEMBER_BYTES :: 15
 ENTRY_BYTES :: 8
 SAVE_V7_SIZE :: SAVE_V6_SIZE + 1 + CREW_MAX * MEMBER_BYTES + 1 + CANDIDATES_MAX * MEMBER_BYTES + 2 + 1 + LOGBOOK_MAX * ENTRY_BYTES
-SAVE_SIZE :: SAVE_V7_SIZE + 1
+SAVE_V8_SIZE :: SAVE_V7_SIZE + 1
+PASSENGER_BYTES :: 10
+SAVE_SIZE :: SAVE_V8_SIZE + 1 + len(Fitting) + 2 + 1 + FARE_OFFERS_MAX * PASSENGER_BYTES + 1 + CABINS_MAX * PASSENGER_BYTES
 NOT_SEEN :: 0xFFFF
 PRICE_MAX :: 60_000
 SAVE_V3_SIZE :: 58
@@ -140,6 +151,15 @@ save_encode :: proc(g: ^Game, buf: ^[SAVE_SIZE]u8) {
 		put_u32(o[4:], u32(e.value))
 	}
 	buf[SAVE_V7_SIZE] = g.course == NO_ISLAND ? NOT_DOCKED : u8(g.course)
+	at9 := SAVE_V8_SIZE
+	buf[at9] = u8(g.ship_type)
+	for f in Fitting {buf[at9 + 1 + int(f)] = u8(g.fitted[f])}
+	at9 += 1 + len(Fitting)
+	put_u16(buf[at9:], u16(g.hull))
+	at9 += 2
+	put_passengers(buf[at9:], g.fare_offers[:g.n_fare_offers])
+	at9 += 1 + FARE_OFFERS_MAX * PASSENGER_BYTES
+	put_passengers(buf[at9:], g.passengers[:g.n_passengers])
 	at := 82
 	for i in 0 ..< ISLAND_MAX {
 		for c in Commodity {
@@ -156,7 +176,7 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 	if data[0] != 'S' || data[1] != 'O' || data[2] != 'S' {return .Magic}
 	version := data[3]
 	if version < 2 || version > SAVE_VERSION {return .Version} // before the size: versions differ in size
-	sizes := [9]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_V4_SIZE, SAVE_V5_SIZE, SAVE_V6_SIZE, SAVE_V7_SIZE, SAVE_SIZE}
+	sizes := [10]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_V4_SIZE, SAVE_V5_SIZE, SAVE_V6_SIZE, SAVE_V7_SIZE, SAVE_V8_SIZE, SAVE_SIZE}
 	if len(data) != sizes[version] {return .Size}
 	turn := get_u32(data[20:])
 	turn_saved := turn
@@ -276,6 +296,30 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 			t.course = int(c)
 		}
 	}
+	if version >= 9 {
+		at := SAVE_V8_SIZE
+		if data[at] > u8(max(Ship_Type)) {return .Range}
+		t.ship_type = Ship_Type(data[at])
+		for f in Fitting {
+			n := int(data[at + 1 + int(f)])
+			if n > FITTINGS[f].most {return .Range}
+			t.fitted[f] = n
+		}
+		at += 1 + len(Fitting)
+		t.hull = int(get_u16(data[at:]))
+		if t.hull < 1 || t.hull > hull_max(t) {return .Range}
+		at += 2
+		ok: bool
+		if t.n_fare_offers, ok = get_passengers(t, data[at:], t.fare_offers[:]); !ok {return .Range}
+		for k in 0 ..< t.n_fare_offers {
+			if t.fare_offers[k].from != t.docked {return .Range}
+		}
+		at += 1 + FARE_OFFERS_MAX * PASSENGER_BYTES
+		if t.n_passengers, ok = get_passengers(t, data[at:], t.passengers[:]); !ok {return .Range}
+		if t.n_passengers > t.fitted[.Cabin] {return .Range}
+	} else {
+		t.hull = hull_max(t)
+	}
 	if version < 4 {
 		t.money = START_MONEY
 	} else {
@@ -284,7 +328,6 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 			if n > CARGO_MAX {return .Range}
 			t.cargo[good] = n
 		}
-		if hold_used(t) > HOLD_TONS {return .Range}
 		at := 82
 		for i in 0 ..< ISLAND_MAX {
 			for c in Commodity {
@@ -299,6 +342,7 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 			}
 		}
 	}
+	if hold_used(t) > hold_tons(t) {return .Range} // after the ship and the cargo are both read
 	t.rng.state = get_u64(data[12:])
 	t.turn = int(turn)
 	t.next_seed = g.next_seed
@@ -338,6 +382,35 @@ get_u32 :: proc(b: []u8) -> (v: u32) {
 get_u64 :: proc(b: []u8) -> (v: u64) {
 	for i in 0 ..< 8 {v |= u64(b[i]) << (8 * uint(i))}
 	return
+}
+
+put_passengers :: proc(b: []u8, ps: []Passenger) {
+	b[0] = u8(len(ps))
+	for p, k in ps {
+		o := b[1 + PASSENGER_BYTES * k:]
+		put_u32(o, p.name_seed)
+		o[4], o[5] = u8(p.from), u8(p.to)
+		put_u16(o[6:], u16(p.fare))
+		put_u16(o[8:], u16(p.due))
+	}
+}
+
+get_passengers :: proc(t: ^Game, b: []u8, out: []Passenger) -> (n: int, ok: bool) {
+	n = int(b[0])
+	if n > len(out) {return 0, false}
+	for k in 0 ..< n {
+		o := b[1 + PASSENGER_BYTES * k:]
+		p := Passenger {
+			name_seed = get_u32(o),
+			from      = int(o[4]),
+			to        = int(o[5]),
+			fare      = int(get_u16(o[6:])),
+			due       = int(get_u16(o[8:])),
+		}
+		if p.from >= t.n_islands || p.to >= t.n_islands || p.from == p.to || p.fare > REWARD_MAX {return 0, false}
+		out[k] = p
+	}
+	return n, true
 }
 
 put_member :: proc(b: []u8, m: Member) {

@@ -177,6 +177,10 @@ draw :: proc(g: ^game.Game) {
 		if g.screen == .Sea || g.screen == .Docked {draw_hud(g)}
 		if g.screen == .Docked && (g.sub == .Offer || g.sub == .Carried_Detail) {draw_letter(g)}
 		if g.sub == .Crew {draw_roster(g)}
+		if g.sub == .Ships {draw_ships(g)}
+		if g.sub == .Fittings {draw_fittings(g)}
+		if g.sub == .Fare && g.pick < g.n_fare_offers {draw_passage(g, g.fare_offers[g.pick], false)}
+		if g.sub == .Passenger && g.pick < g.n_passengers {draw_passage(g, g.passengers[g.pick], true)}
 		if g.sub == .Member && g.pick < g.n_crew {
 			m := g.crew[g.pick]
 			if g.pick == 0 {m.hp = g.health}
@@ -399,10 +403,12 @@ draw_hud :: proc(g: ^game.Game) {
 	draw_text(84, 12, fmt.bprintf(buf[:], "Fed %d", g.satiety), g.satiety < 50 ? GOLD : WHITE, 1, false)
 	draw_text(150, 12, fmt.bprintf(buf[:], "Health %d", g.health), g.health < 50 ? RED : WHITE, 1, false)
 	p, sb := game.hull_clean(g, .Port), game.hull_clean(g, .Starboard)
-	draw_text(4, 26, fmt.bprintf(buf[:], "Hull: port %d%%, starboard %d%%", p, sb), min(p, sb) < 60 ? GOLD : DIM, 1, false)
+	hull_low := g.hull * 2 < game.hull_max(g)
+	draw_text(4, 26, fmt.bprintf(buf[:], "Hull %d/%d", g.hull, game.hull_max(g)), hull_low ? RED : WHITE, 1, false)
+	draw_text(84, 26, fmt.bprintf(buf[:], "Clean %d%%/%d%%", p, sb), min(p, sb) < 60 ? GOLD : DIM, 1, false)
 	draw_text(4, 40, fmt.bprintf(buf[:], "Money %d", g.money), GOLD, 1, false)
 	used := game.hold_used(g)
-	draw_text(110, 40, fmt.bprintf(buf[:], "Hold %d/%d", used, game.HOLD_TONS), used >= game.HOLD_TONS ? GOLD : WHITE, 1, false)
+	draw_text(110, 40, fmt.bprintf(buf[:], "Hold %d/%d", used, game.hold_tons(g)), used >= game.hold_tons(g) ? GOLD : WHITE, 1, false)
 	draw_text(180, 40, fmt.bprintf(buf[:], "Crew %d", g.n_crew), WHITE, 1, false)
 }
 
@@ -436,6 +442,75 @@ draw_skills :: proc(skills: [game.Skill]int, x, y0: f32) {
 		fill_rect(x + 96, y - 6, f32(v), 4, raised ? GOLD : FAINT, 1)
 		y += 14
 	}
+}
+
+// The shipyard's ships side by side, with your own in gold.
+draw_ships :: proc(g: ^game.Game) {
+	X, Y, W, H :: 8, 50, 224, 132
+	fill_rect(X, Y, W, H, PANEL, 0.94)
+	fill_rect(X, Y, W, 1, EDGE, 1)
+	draw_text(X + 6, Y + 14, "Ship", DIM, 1, false)
+	draw_text(X + 56, Y + 14, "Hold", DIM, 1, false)
+	draw_text(X + 96, Y + 14, "Hull", DIM, 1, false)
+	draw_text(X + 136, Y + 14, "Speed", DIM, 1, false)
+	draw_text(X + 180, Y + 14, "Price", DIM, 1, false)
+	buf: [16]u8
+	y := f32(Y + 30)
+	for s in game.Ship_Type {
+		info := game.SHIPS[s]
+		c: u32 = s == g.ship_type ? GOLD : WHITE
+		draw_text(X + 6, y, info.name, c, 1, false)
+		draw_text(X + 56, y, fmt.bprintf(buf[:], "%d", info.hold), c, 1, false)
+		draw_text(X + 96, y, fmt.bprintf(buf[:], "%d", info.hull), c, 1, false)
+		draw_text(X + 136, y, fmt.bprintf(buf[:], "%d%%", int(info.speed * 100 + 0.5)), c, 1, false)
+		draw_text(X + 180, y, fmt.bprintf(buf[:], "%d", info.price), c, 1, false)
+		y += 14
+	}
+	y += 6
+	lb: [64]u8
+	y = draw_text_wrapped(X + 6, y, W - 12, fmt.bprintf(lb[:], "Yours goes in part exchange for %d.", game.trade_in(g)), DIM)
+	draw_text_wrapped(X + 6, y, W - 12, "Fittings move to the new ship.", DIM)
+}
+
+draw_fittings :: proc(g: ^game.Game) {
+	X, Y, W, H :: 8, 50, 224, 132
+	fill_rect(X, Y, W, H, PANEL, 0.94)
+	fill_rect(X, Y, W, 1, EDGE, 1)
+	WHAT := [game.Fitting]string {
+		.Extra_Hold = "25 more tons; two at most.",
+		.Copper     = "Halves the fouling under way.",
+		.Cabin      = "One passenger each; three at most.",
+		.Timbers    = "50 more points of hull.",
+	}
+	y := f32(Y + 14)
+	for f in game.Fitting {
+		draw_text(X + 6, y, game.FITTINGS[f].name, g.fitted[f] > 0 ? GOLD : WHITE, 1, false)
+		draw_text(X + 6, y + 13, WHAT[f], DIM, 1, false)
+		y += 30
+	}
+}
+
+// A passenger asking for passage, or one aboard.
+draw_passage :: proc(g: ^game.Game, p: game.Passenger, aboard: bool) {
+	X, Y, W, H :: 16, 62, 208, 90
+	fill_rect(X + 3, Y + 3, W, H, 0x000000, 0.4)
+	fill_rect(X, Y, W, H, PAPER, 1)
+	fill_rect(X, Y, W, 1, INK_DIM, 1)
+	fill_rect(X, Y + H - 1, W, 1, INK_DIM, 1)
+	buf: [96]u8
+	nb: [game.NAME_LEN]u8
+	name := game.member_name(game.Member{name_seed = p.name_seed}, nb[:])
+	line := aboard ? fmt.bprintf(buf[:], "%s is bound for %s.", name, game.island_name(g, p.to)) : fmt.bprintf(buf[:], "%s seeks passage to %s, %d leagues.", name, game.island_name(g, p.to), game.leagues_between(g, p.from, p.to))
+	y := draw_text_wrapped(X + 8, Y + 16, W - 16, line, INK)
+	y += 6
+	lb: [64]u8
+	left := p.due - g.turn
+	if left >= 0 {
+		draw_text(X + 8, y, fmt.bprintf(lb[:], "Fare %d by turn %d (%d left).", p.fare, p.due, left), INK, 1, false)
+	} else {
+		draw_text(X + 8, y, fmt.bprintf(lb[:], "Late! Now pays %d.", game.fare_for(g, p)), LATE, 1, false)
+	}
+	draw_text(X + 8, y + f32(game.LINE), "Eats a ration a turn.", INK_DIM, 1, false)
 }
 
 // The crew at a glance.
@@ -569,14 +644,18 @@ draw_panel :: proc(g: ^game.Game) {
 				draw_text(tx, 42, fmt.bprintf(buf[:], "Best %d", g.best), DIM, 1, false)
 			}
 		} else {
-			draw_text(tx, 14, "LOST AT SEA", RED, 1, false)
+			draw_text(tx, 14, g.outcome == .Sank ? "SUNK" : "LOST AT SEA", RED, 1, false)
 			draw_text(tx, 28, fmt.bprintf(buf[:], "On turn %d", g.turn), WHITE, 1, false)
 			if g.has_best {draw_text(tx, 42, fmt.bprintf(buf[:], "Best %d", g.best), DIM, 1, false)}
 		}
 	case .Docked:
 		if crew_panel(g, tx) {break}
 		#partial switch g.sub {
-		case .Deliveries, .Offer, .Carried, .Carried_Detail:
+		case .Ship, .Ships, .Fittings:
+			draw_text(tx, 14, game.at_shipyard(g) ? "Shipyard" : "Your ship", GOLD, 1, false)
+			draw_text(tx, 28, fmt.bprintf(buf[:], "%s, hull %d/%d", game.SHIPS[g.ship_type].name, g.hull, game.hull_max(g)), WHITE, 1, false)
+			draw_text(tx, 42, fmt.bprintf(buf[:], "Money %d", g.money), DIM, 1, false)
+		case .Deliveries, .Offer, .Carried, .Carried_Detail, .Fare, .Passengers, .Passenger:
 			draw_text(tx, 14, "Delivery service", GOLD, 1, false)
 			draw_text(tx, 28, fmt.bprintf(buf[:], "Carrying %d of %d", g.n_carried, game.CARRY_MAX), WHITE, 1, false)
 			draw_text(tx, 42, fmt.bprintf(buf[:], "Delivered %d so far", g.deliveries_made), DIM, 1, false)
@@ -590,9 +669,10 @@ draw_panel :: proc(g: ^game.Game) {
 			draw_text(tx, 42, fmt.bprintf(buf[:], "%d lots left today", g.vendor_stock), DIM, 1, false)
 		}
 		if g.sub == .Deliveries || g.sub == .Offer || g.sub == .Carried || g.sub == .Carried_Detail || g.sub == .Vendor || g.sub == .Alley {break}
+		if g.sub == .Fare || g.sub == .Passengers || g.sub == .Passenger || g.sub == .Ship || g.sub == .Ships || g.sub == .Fittings {break}
 		if g.sub == .Market || g.sub == .Trade {
 			draw_text(tx, 14, fmt.bprintf(buf[:], "Money %d", g.money), GOLD, 1, false)
-			draw_text(tx, 28, fmt.bprintf(buf[:], "Hold %d of %d tons", game.hold_used(g), game.HOLD_TONS), WHITE, 1, false)
+			draw_text(tx, 28, fmt.bprintf(buf[:], "Hold %d of %d tons", game.hold_used(g), game.hold_tons(g)), WHITE, 1, false)
 			if g.sub == .Market {
 				draw_text(tx, 42, "Price: buy / sell", DIM, 1, false)
 			} else if g.trade_good == game.RATIONS {

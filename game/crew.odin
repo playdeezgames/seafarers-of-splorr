@@ -201,7 +201,8 @@ speed_factor :: proc(g: ^Game) -> f32 {
 }
 
 foul_per_turn :: proc(g: ^Game) -> int {
-	return (FOUL_PER_TURN * (200 - best(g, .Pilot)) + 100) / 200
+	f := (FOUL_PER_TURN * (200 - best(g, .Pilot)) + 100) / 200
+	return g.fitted[.Copper] > 0 ? (f + 1) / 2 : f // copper sheathing halves it
 }
 
 view_distance :: proc(g: ^Game) -> f32 {
@@ -351,6 +352,8 @@ Log_Kind :: enum u8 {
 	Dismissed,
 	Won,
 	Sold,
+	New_Ship, // value: Ship_Type
+	Passage, // value: fares paid
 }
 
 Log_Entry :: struct {
@@ -395,6 +398,11 @@ logbook_text :: proc(g: ^Game, e: Log_Entry, buf: []u8) -> string {
 		return fmt.bprintf(buf, "%d: Won %d at %s's alley.", e.turn, e.value, at)
 	case .Sold:
 		return fmt.bprintf(buf, "%d: A sale of %d at %s.", e.turn, e.value, at)
+	case .New_Ship:
+		name := e.value >= 0 && e.value <= int(max(Ship_Type)) ? SHIPS[Ship_Type(e.value)].name : "ship"
+		return fmt.bprintf(buf, "%d: Bought a %s at %s.", e.turn, name, at)
+	case .Passage:
+		return fmt.bprintf(buf, "%d: Fares at %s: %d.", e.turn, at, e.value)
 	}
 	return ""
 }
