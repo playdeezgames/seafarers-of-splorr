@@ -28,3 +28,21 @@ Not posted. A working record.
   (Classic's fold docked at the farthest).
 - Save version 2 (44 bytes: adds the docked island and the charted islands). A Phase 0 save is refused with a
   friendly line, since the world generator changed. 18 native tests.
+
+## Phase 2, staying alive (same day)
+
+- The user's answers: the score is **net worth only** (money now; cargo joins it with trade); a voyage lasts **2,500
+  turns**; you start with **plenty of rations** (1,000) and cannot restock until trade arrives.
+- Each turn one ration is eaten (Classic's rule): satiety rises by one to 100; with no rations it falls by one, and at
+  zero health falls by one a turn. Full satiety mends health by one a turn. Health 0 ends the voyage: lost at sea.
+- Hull fouling per side grows while under way, up to a quarter per side (both sides fouled halves the speed after 500
+  turns); effective speed is speed times one less the fouling, as in Classic. Careen to port or starboard while docked
+  (10 turns) to scrape that side clean.
+- Reaching turn 2,500 retires you: the net worth is the score, and the best is kept in this browser. The ended
+  voyage's save is cleared.
+- A status bar over the sea shows food, satiety, health and both sides of the hull.
+- Save version 3 (58 bytes) adds money, rations, satiety, health and fouling; Phase 1 saves load with the starting
+  values.
+- Every file URL now carries a build id (`?v=...`, stamped by `tools/build.sh`), so a new build is never mixed with a
+  cached old `game.wasm` (the Pages CDN caches for ten minutes; this happened after the Phase 1 push).
+- 24 native tests.

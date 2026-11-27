@@ -16,12 +16,12 @@ MENU_TEXT :: 24
 LOG_LINES :: 4
 LOG_Y :: LOGICAL_H - 4 - (LOG_LINES - 1) * LINE // baseline of the oldest log line
 LOG_LEN :: 40
-TURN_MAX :: 1_000_000
 
 Screen :: enum u8 {
 	Title,
 	Sea,
 	Docked,
+	Over, // retired or dead: the score
 }
 
 // A submenu open over the sea screen.
@@ -34,6 +34,7 @@ Sub :: enum u8 {
 	Head_For,
 	Dock,
 	Chart,
+	Careen,
 }
 
 // Keyboard and gamepad commands; order matches ACTION in web/index.html.
@@ -51,6 +52,8 @@ Sound :: enum u8 {
 	Deny,
 	Sighted,
 	Dock,
+	Retire,
+	Lose,
 }
 
 Cmd :: enum u8 {
@@ -67,6 +70,7 @@ Cmd :: enum u8 {
 	Head_For, // arg: island
 	Dock, // arg: island, or NO_ISLAND to dock at the only one in range or choose
 	Undock,
+	Careen, // arg: Side
 }
 
 Item :: struct {
@@ -100,6 +104,16 @@ Game :: struct {
 	land:       [WORLD_SIZE * WORLD_SIZE]u8, // 0 water, else island index + 1
 	cursor:     int,
 	has_voyage: bool, // a voyage exists (started or loaded) that Continue returns to
+	money:      int,
+	rations:    int,
+	satiety:    int,
+	health:     int,
+	foul:       [Side]int, // ten-thousandths, 0 ..= FOUL_MAX
+	outcome:    Outcome,
+	best:       int, // best retirement score on this browser
+	has_best:   bool,
+	new_best:   bool,
+	want_best:  bool,
 	muted:      bool, // mirrors the page's mute setting, for the menu label
 	// Requests to the web layer, cleared by it.
 	want_save:  bool,
@@ -113,7 +127,9 @@ Game :: struct {
 
 // A fresh game on the title screen; the title shows the world New voyage will build.
 title :: proc(g: ^Game, seed: u64) {
+	best, has_best, muted := g.best, g.has_best, g.muted
 	g^ = {}
+	g.best, g.has_best, g.muted = best, has_best, muted
 	g.next_seed = seed
 	start_world(g, seed)
 	logf(g, "Welcome aboard.")
@@ -126,6 +142,12 @@ start_world :: proc(g: ^Game, seed: u64) {
 	generate_world(g)
 	g.ship = {x = WORLD_SIZE / 2, y = WORLD_SIZE / 2, heading = 0, speed = 100}
 	g.docked = NO_ISLAND
+	g.money = 0
+	g.rations = START_RATIONS
+	g.satiety = STAT_MAX
+	g.health = STAT_MAX
+	g.foul = {}
+	g.outcome = .None
 	if g.n_islands > 0 {
 		if x, y, ok := mooring(g, 0); ok {
 			g.ship.x, g.ship.y = x, y
@@ -137,7 +159,7 @@ start_world :: proc(g: ^Game, seed: u64) {
 
 menu :: proc(g: ^Game) -> (m: Menu) {
 	add :: proc(g: ^Game, m: ^Menu, label: string, cmd: Cmd, arg := 0) {
-		if m.n == MENU_MAX {return}
+		assert(m.n < MENU_MAX, "menu overflow")
 		m.items[m.n] = {label, cmd, arg}
 		m.n += 1
 	}
@@ -153,8 +175,18 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 		if g.has_voyage {add(g, &m, "Continue voyage", .Continue)}
 		add(g, &m, "New voyage", .New_Voyage)
 		add(g, &m, sound_label, .Sound_Toggle)
+	case .Over:
+		add(g, &m, "New voyage", .New_Voyage)
+		add(g, &m, sound_label, .Sound_Toggle)
 	case .Docked:
+		if g.sub == .Careen {
+			addf(g, &m, .Careen, int(Side.Port), "Port side %d%%", hull_clean(g, .Port))
+			addf(g, &m, .Careen, int(Side.Starboard), "Starboard %d%%", hull_clean(g, .Starboard))
+			add(g, &m, "Back", .Back)
+			break
+		}
 		add(g, &m, "Cast off", .Undock)
+		add(g, &m, "Careen", .Open, int(Sub.Careen))
 		add(g, &m, sound_label, .Sound_Toggle)
 		add(g, &m, "Back to title", .To_Title)
 	case .Sea:
@@ -203,6 +235,8 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			for j in 0 ..< n {add(g, &m, island_name(g, near[j]), .Dock, near[j])}
 			add(g, &m, "Back", .Back)
 		case .Chart:
+			add(g, &m, "Back", .Back)
+		case .Careen:
 			add(g, &m, "Back", .Back)
 		}
 	}
@@ -277,6 +311,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		g.screen = g.docked == NO_ISLAND ? .Sea : .Docked
 		g.sub = .None
 		g.has_voyage = true
+		g.new_best = false
 		g.cursor = 0
 		if g.docked != NO_ISLAND {
 			logf(g, "Home port: %s.", island_name(g, g.docked))
@@ -285,6 +320,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		}
 		g.want_save = true
 	case .Continue:
+		if !g.has_voyage {return}
 		g.screen = g.docked == NO_ISLAND ? .Sea : .Docked
 		g.sub = .None
 		g.cursor = 0
@@ -351,6 +387,11 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		sound(g, .Dock)
 		logf(g, "Docked at %s.", island_name(g, target))
 		g.want_save = true
+	case .Careen:
+		if arg < 0 || arg > int(max(Side)) {return}
+		careen(g, Side(arg))
+		if g.screen != .Over {open(g, .None)}
+		g.want_save = true
 	case .Undock:
 		if g.docked != NO_ISLAND {logf(g, "Cast off from %s.", island_name(g, g.docked))}
 		g.docked = NO_ISLAND
@@ -364,9 +405,9 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 // on sighting a new island. At all stop the turns simply pass.
 sail :: proc(g: ^Game, turns: int) {
 	rad := f32(g.ship.heading) * math.PI / 180
-	step := f32(g.ship.speed) / 100
 	for t in 0 ..< turns {
-		if g.turn >= TURN_MAX {return}
+		if g.screen != .Sea {return}
+		step := effective_speed(g) / 100
 		nx := g.ship.x + math.sin(rad) * step
 		ny := g.ship.y - math.cos(rad) * step
 		if nx < 0 || ny < 0 || nx >= WORLD_SIZE || ny >= WORLD_SIZE {
@@ -380,7 +421,7 @@ sail :: proc(g: ^Game, turns: int) {
 			return
 		}
 		g.ship.x, g.ship.y = nx, ny
-		g.turn += 1
+		if !tick(g, g.ship.speed > 0) {return}
 		if s := look(g); s != NO_ISLAND {
 			sound(g, .Sighted)
 			logf(g, "Sighted %s!", island_name(g, s))

@@ -143,7 +143,7 @@ open_sea :: proc(g: ^Game) {
 	g.ship = {x = 60.5, y = 60.5, heading = 0, speed = 100}
 }
 
-near :: proc(a, b: f32) -> bool {return abs(a - b) < 0.001}
+near :: proc(a, b: f32) -> bool {return abs(a - b) < 0.01} // fouling shaves a little off each turn
 
 @(test)
 helm_and_speed :: proc(t: ^testing.T) {
@@ -303,12 +303,19 @@ every_menu_fits :: proc(t: ^testing.T) {
 	do_cmd(g, .New_Voyage, 0)
 	do_cmd(g, .Undock, 0)
 	for i in 0 ..< g.n_islands {g.islands[i].charted = true}
+	// Alongside an island (dock in range) every sea menu still fits; add() asserts on overflow.
 	for s in Sub {
 		g.sub = s
 		m := menu(g)
 		testing.expect(t, m.n >= 1 && m.n <= MENU_MAX)
 		for k in 0 ..< m.n {testing.expect(t, len(m.items[k].label) < MENU_TEXT)}
 	}
+	g.sub = .None
+	testing.expect_value(t, menu(g).items[menu(g).n - 1].cmd, Cmd.To_Title)
+	do_cmd(g, .Dock, NO_ISLAND)
+	testing.expect_value(t, g.screen, Screen.Docked)
+	do_cmd(g, .Open, int(Sub.Careen))
+	testing.expect_value(t, menu(g).n, 3)
 }
 
 @(test)
@@ -394,7 +401,7 @@ save_rejects_bad_data :: proc(t: ^testing.T) {
 	put_u32(bad[28:], 0x7FC00000) // NaN
 	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
 	bad = good
-	put_u32(bad[20:], TURN_MAX + 1)
+	put_u32(bad[20:], TURN_LIMIT)
 	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
 	bad = good
 	bad[35] = u8(g.n_islands) // no such island
@@ -414,5 +421,171 @@ save_rejects_bad_data :: proc(t: ^testing.T) {
 		testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
 	}
 	testing.expect_value(t, h.seed, 2) // untouched by every refusal
+	testing.expect(t, !h.has_voyage)
+}
+
+@(test)
+eating_and_starving :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	testing.expect_value(t, g.rations, START_RATIONS)
+	do_cmd(g, .Sail, 10)
+	testing.expect_value(t, g.rations, START_RATIONS - 10)
+	testing.expect_value(t, g.satiety, STAT_MAX)
+	g.rations = 0
+	do_cmd(g, .Set_Speed, 0)
+	do_cmd(g, .Sail, 25)
+	testing.expect_value(t, g.satiety, STAT_MAX - 25)
+	testing.expect_value(t, g.health, STAT_MAX)
+	g.satiety = 1
+	do_cmd(g, .Sail, 5) // one turn to empty, then four of hurting
+	testing.expect_value(t, g.satiety, 0)
+	testing.expect_value(t, g.health, STAT_MAX - 4)
+	g.rations = 10
+	g.satiety = STAT_MAX - 1
+	do_cmd(g, .Sail, 3) // full on the first turn, so health returns on all three
+	testing.expect_value(t, g.health, STAT_MAX - 1)
+}
+
+@(test)
+starving_ends_the_voyage_as_a_loss :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	g.best, g.has_best = 500, true
+	g.rations, g.satiety, g.health = 0, 0, 3
+	do_cmd(g, .Set_Speed, 0)
+	turn := g.turn
+	do_cmd(g, .Sail, 25)
+	testing.expect_value(t, g.turn, turn + 3) // stops on the turn it ends
+	testing.expect_value(t, g.screen, Screen.Over)
+	testing.expect_value(t, g.outcome, Outcome.Starved)
+	testing.expect(t, !g.has_voyage)
+	testing.expect(t, !g.new_best)
+	testing.expect_value(t, g.best, 500)
+	testing.expect_value(t, menu(g).items[0].cmd, Cmd.New_Voyage)
+	choose(g, 0)
+	testing.expect_value(t, g.screen, Screen.Docked) // a fresh voyage, fed and healthy
+	testing.expect_value(t, g.health, STAT_MAX)
+	testing.expect_value(t, g.best, 500)
+}
+
+@(test)
+the_turn_limit_retires_with_a_score :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	g.money = 1234
+	g.turn = TURN_LIMIT - 2
+	do_cmd(g, .Set_Speed, 0)
+	do_cmd(g, .Sail, 10)
+	testing.expect_value(t, g.turn, TURN_LIMIT)
+	testing.expect_value(t, g.outcome, Outcome.Retired)
+	testing.expect_value(t, score(g), 1234)
+	testing.expect(t, g.new_best && g.has_best && g.want_best)
+	testing.expect_value(t, g.best, 1234)
+	// A lower score later is not a new best; a zero first score is.
+	h := new(Game)
+	defer free(h)
+	open_sea(h)
+	h.best, h.has_best = 1234, true
+	h.money = 10
+	h.turn = TURN_LIMIT - 1
+	do_cmd(h, .Sail, 1)
+	testing.expect(t, !h.new_best)
+	testing.expect_value(t, h.best, 1234)
+	title(h, 9) // the best survives a return to the title
+	testing.expect_value(t, h.best, 1234)
+}
+
+@(test)
+fouling_slows_and_careening_cleans :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	g.ship.heading = 90
+	g.rations = RATIONS_MAX
+	for _ in 0 ..< 20 {do_cmd(g, .Sail, 25)} // 500 turns east, onto the world's edge at most
+	testing.expect(t, g.foul[.Port] > 0)
+	g.ship = {x = 60.5, y = 60.5, heading = 0, speed = 100}
+	g.foul = {.Port = FOUL_MAX, .Starboard = FOUL_MAX}
+	testing.expect(t, abs(effective_speed(g) - 50) < 0.01)
+	testing.expect_value(t, hull_clean(g, .Port), 0)
+	y0 := g.ship.y
+	do_cmd(g, .Sail, 1)
+	testing.expect(t, near(g.ship.y, y0 - 0.5))
+	// Fouling does not grow at all stop.
+	g.foul[.Port] = 100
+	do_cmd(g, .Set_Speed, 0)
+	do_cmd(g, .Sail, 5)
+	testing.expect_value(t, g.foul[.Port], 100)
+
+	// Careening needs land close by.
+	turn := g.turn
+	do_cmd(g, .Careen, int(Side.Port))
+	testing.expect_value(t, g.turn, turn)
+	testing.expect_value(t, g.foul[.Port], 100)
+	g.islands[0] = {x = 61, y = 60, charted = true}
+	g.land[60 * WORLD_SIZE + 61] = 1
+	g.n_islands = 1
+	testing.expect(t, can_careen(g))
+	do_cmd(g, .Careen, int(Side.Port))
+	testing.expect_value(t, g.turn, turn + CAREEN_TURNS)
+	testing.expect_value(t, g.foul[.Port], 0)
+	testing.expect_value(t, g.foul[.Starboard], FOUL_MAX)
+}
+
+@(test)
+version_2_saves_load_with_starting_values :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	title(g, 1234)
+	do_cmd(g, .New_Voyage, 0)
+	buf: [SAVE_SIZE]u8
+	save_encode(g, &buf)
+	buf[3] = 2
+	h := new(Game)
+	defer free(h)
+	title(h, 5)
+	testing.expect_value(t, save_decode(h, buf[:SAVE_V2_SIZE]), Load_Error.None)
+	testing.expect_value(t, h.rations, START_RATIONS)
+	testing.expect_value(t, h.health, STAT_MAX)
+	testing.expect_value(t, h.docked, 0)
+	testing.expect_value(t, save_decode(h, buf[:]), Load_Error.Size) // version 2 at version 3's size
+}
+
+@(test)
+version_3_fields_round_trip_and_are_checked :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	title(g, 77)
+	do_cmd(g, .New_Voyage, 0)
+	g.money, g.rations, g.satiety, g.health = 321, 17, 40, 60
+	g.foul = {.Port = 1200, .Starboard = 30}
+	good: [SAVE_SIZE]u8
+	save_encode(g, &good)
+	h := new(Game)
+	defer free(h)
+	title(h, 5)
+	testing.expect_value(t, save_decode(h, good[:]), Load_Error.None)
+	testing.expect_value(t, h.money, 321)
+	testing.expect_value(t, h.rations, 17)
+	testing.expect_value(t, h.satiety, 40)
+	testing.expect_value(t, h.health, 60)
+	testing.expect_value(t, h.foul, g.foul)
+	title(h, 5)
+	bad := good
+	bad[53] = 0 // dead
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = good
+	bad[52] = 101
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = good
+	put_u16(bad[54:], FOUL_MAX + 1)
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = good
+	put_u32(bad[48:], RATIONS_MAX + 1)
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
 	testing.expect(t, !h.has_voyage)
 }

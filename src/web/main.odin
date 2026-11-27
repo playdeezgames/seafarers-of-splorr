@@ -23,6 +23,10 @@ foreign canvas {
 	store_save :: proc(data: []u8) ---
 	// Flips the page's mute setting and returns the new value.
 	toggle_mute :: proc() -> bool ---
+	// Removes the stored voyage (it ended).
+	clear_save :: proc() ---
+	// The best retirement score kept in localStorage.
+	store_best :: proc(score: i32) ---
 }
 
 WHITE :: 0xf4ecd8
@@ -35,6 +39,7 @@ DEEP :: 0x0e1a2e
 PANEL :: 0x141c2a
 EDGE :: 0x3a4a62
 HILITE :: 0x2a3a58
+RED :: 0xe0533a
 LAND :: 0xb4532a
 
 ctx: runtime.Context
@@ -61,12 +66,13 @@ save_size :: proc "c" () -> i32 {
 // Called once by the page after the wasm is running. seed_hi and seed_lo make the world seed; seeded is true for
 // ?seed=N. save_len is the number of bytes the page wrote into save_buffer (0 when there is no save).
 @(export)
-boot :: proc "c" (seed_hi, seed_lo: i32, seeded, muted: bool, save_len: i32) {
+boot :: proc "c" (seed_hi, seed_lo: i32, seeded, muted: bool, save_len: i32, best: i32) {
 	context = ctx
 	hi := u64(u32(seed_hi))
 	lo := u64(u32(seed_lo))
-	game.title(&state, hi << 32 | lo)
 	state.muted = muted
+	if best >= 0 {state.best, state.has_best = int(best), true}
+	game.title(&state, hi << 32 | lo)
 	qa = seeded
 	if !qa && save_len > 0 {
 		err := game.Load_Error.Size // longer than the buffer: the page wrote only its first bytes
@@ -122,11 +128,19 @@ step :: proc(dt: f64, c: runtime.Context) -> bool {
 	}
 	if g.want_save {
 		if !qa {
-			buf: [game.SAVE_SIZE]u8
-			game.save_encode(g, &buf)
-			store_save(buf[:])
+			if g.has_voyage {
+				buf: [game.SAVE_SIZE]u8
+				game.save_encode(g, &buf)
+				store_save(buf[:])
+			} else {
+				clear_save()
+			}
 		}
 		g.want_save = false
+	}
+	if g.want_best {
+		if !qa {store_best(i32(g.best))}
+		g.want_best = false
 	}
 	for i in 0 ..< g.n_sounds {play_sound(i32(g.sounds[i]))}
 	g.n_sounds = 0
@@ -139,6 +153,7 @@ draw :: proc(g: ^game.Game) {
 		draw_chart(g)
 	} else {
 		draw_sea(g)
+		if g.screen == .Sea || g.screen == .Docked {draw_hud(g)}
 	}
 	draw_panel(g)
 }
@@ -216,6 +231,18 @@ draw_chart :: proc(g: ^game.Game) {
 	fill_rect(math.round(sx) - 1, math.round(sy) - 1, 3, 3, WHITE, 1)
 }
 
+// Ship's condition along the top of the sea view.
+draw_hud :: proc(g: ^game.Game) {
+	fill_rect(0, 0, game.PANEL_X, 31, DEEP, 0.7)
+	buf: [48]u8
+	food: u32 = g.rations == 0 ? RED : (g.rations < 100 ? GOLD : WHITE)
+	draw_text(4, 12, fmt.bprintf(buf[:], "Food %d", g.rations), food, 1, false)
+	draw_text(84, 12, fmt.bprintf(buf[:], "Fed %d", g.satiety), g.satiety < 50 ? GOLD : WHITE, 1, false)
+	draw_text(150, 12, fmt.bprintf(buf[:], "Health %d", g.health), g.health < 50 ? RED : WHITE, 1, false)
+	p, sb := game.hull_clean(g, .Port), game.hull_clean(g, .Starboard)
+	draw_text(4, 26, fmt.bprintf(buf[:], "Hull: port %d%%, starboard %d%%", p, sb), min(p, sb) < 60 ? GOLD : DIM, 1, false)
+}
+
 tile_hash :: proc(x, y: int) -> int {
 	h := u32(x) * 73856093 ~ u32(y) * 19349663
 	h ~= h >> 13
@@ -235,12 +262,26 @@ draw_panel :: proc(g: ^game.Game) {
 		draw_text(x0 + 80, 18, "SEAFARERS", GOLD, 1, true)
 		draw_text(x0 + 80, 32, "of SPLORR!!", WHITE, 1, true)
 		draw_text(x0 + 80, 46, "sail, trade, retire", DIM, 1, true)
+	case .Over:
+		if g.outcome == .Retired {
+			draw_text(tx, 14, "RETIRED", GOLD, 1, false)
+			draw_text(tx, 28, fmt.bprintf(buf[:], "Net worth %d", game.score(g)), WHITE, 1, false)
+			if g.new_best {
+				draw_text(tx, 42, "A new best!", GOLD, 1, false)
+			} else {
+				draw_text(tx, 42, fmt.bprintf(buf[:], "Best %d", g.best), DIM, 1, false)
+			}
+		} else {
+			draw_text(tx, 14, "LOST AT SEA", RED, 1, false)
+			draw_text(tx, 28, fmt.bprintf(buf[:], "On turn %d", g.turn), WHITE, 1, false)
+			if g.has_best {draw_text(tx, 42, fmt.bprintf(buf[:], "Best %d", g.best), DIM, 1, false)}
+		}
 	case .Docked:
-		draw_text(tx, 14, fmt.bprintf(buf[:], "Turn %d", g.turn), WHITE, 1, false)
+		draw_text(tx, 14, fmt.bprintf(buf[:], "Turn %d of %d", g.turn, game.TURN_LIMIT), WHITE, 1, false)
 		draw_text(tx, 28, "Docked at", DIM, 1, false)
 		if g.docked != game.NO_ISLAND {draw_text(tx, 42, game.island_name(g, g.docked), GOLD, 1, false)}
 	case .Sea:
-		draw_text(tx, 14, fmt.bprintf(buf[:], "Turn %d", g.turn), WHITE, 1, false)
+		draw_text(tx, 14, fmt.bprintf(buf[:], "Turn %d of %d", g.turn, game.TURN_LIMIT), WHITE, 1, false)
 		if g.sub == .Chart {
 			n := 0
 			for i in 0 ..< g.n_islands {if g.islands[i].charted {n += 1}}
@@ -248,7 +289,9 @@ draw_panel :: proc(g: ^game.Game) {
 			draw_text(tx, 42, fmt.bprintf(buf[:], "%d of %d islands", n, g.n_islands), DIM, 1, false)
 		} else {
 			draw_text(tx, 28, fmt.bprintf(buf[:], "Heading %03d %s", g.ship.heading, game.compass(g.ship.heading)), WHITE, 1, false)
-			draw_text(tx, 42, g.ship.speed == 0 ? "All stop" : fmt.bprintf(buf[:], "Speed %d%%", g.ship.speed), WHITE, 1, false)
+			eff := int(game.effective_speed(g) + 0.5)
+			speed := g.ship.speed == 0 ? "All stop" : (eff < g.ship.speed ? fmt.bprintf(buf[:], "Speed %d%% (%d)", g.ship.speed, eff) : fmt.bprintf(buf[:], "Speed %d%%", g.ship.speed))
+			draw_text(tx, 42, speed, WHITE, 1, false)
 		}
 	}
 	fill_rect(x0 + 4, game.MENU_Y - game.LINE - 2, game.LOGICAL_W - x0 - 8, 1, EDGE, 1)

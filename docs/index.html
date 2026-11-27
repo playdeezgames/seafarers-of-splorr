@@ -21,8 +21,8 @@
   Keys: arrows or W/S, Enter, Esc, 1 to 9, M to mute.<br>
   <span class="ll-only" hidden><a href="#" id="feedback-link">Send feedback</a> · </span><a href="https://thegrumpygamedev.itch.io/">itch.io</a> · <a href="https://playdeezgames.github.io/oeuvre-of-splorr/">more games</a>
 </footer>
-<script type="text/javascript" src="odin.js"></script>
-<script src="lootlocker.js"></script>
+<script type="text/javascript" src="odin.js?v=9f48206-1795775269"></script>
+<script src="lootlocker.js?v=9f48206-1795775269"></script>
 <script>
   // Feedback through the shared SPLORR!! LootLocker kit (splorr/Tech/LootLocker.md in the vault). This game has no
   // LootLocker game yet: until domain and key are filled in and the console has Game feedback categories, the
@@ -44,7 +44,7 @@
   const ctx = cv.getContext("2d");
   ctx.imageSmoothingEnabled = false;
   const css = (rgb) => "#" + (rgb >>> 0).toString(16).padStart(6, "0");
-  const SAVE_KEY = "seafarers-of-splorr:save", MUTE_KEY = "seafarers-of-splorr:muted";
+  const SAVE_KEY = "seafarers-of-splorr:save", MUTE_KEY = "seafarers-of-splorr:muted", BEST_KEY = "seafarers-of-splorr:best";
   const store = {
     get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } },
     set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} },
@@ -60,12 +60,12 @@
   fit();
 
   const tiles = new Image();
-  tiles.src = "natural.png"; // Bountiful Bits Natural, coloured, no background: 10 by 10 tiles, no gaps
+  tiles.src = "natural.png?v=9f48206-1795775269"; // Bountiful Bits Natural, coloured, no background: 10 by 10 tiles, no gaps
 
   // Bitmap font: m6x11, ASCII 32..126 in a 16x6 grid of 10x14 cells, 11 rows above the baseline.
   const FONT_W = 10, FONT_H = 14, FONT_BASE = 11;
   const font = new Image();
-  font.src = "font.png";
+  font.src = "font.png?v=9f48206-1795775269";
   const fontAdvance = [];
   const fontTinted = new Map();
   font.onload = () => {
@@ -139,6 +139,8 @@
     { wave: "square", notes: [[196, 0.08], [147, 0.1]] },       // Deny
     { wave: "triangle", notes: [[659, 0.08], [784, 0.08], [988, 0.14]] }, // Sighted
     { wave: "triangle", notes: [[392, 0.06], [294, 0.12]] },    // Dock
+    { wave: "triangle", notes: [[523, 0.12], [659, 0.12], [784, 0.12], [1047, 0.3]] }, // Retire
+    { wave: "square", notes: [[294, 0.15], [262, 0.15], [220, 0.15], [147, 0.4]] },    // Lose
   ];
   let muted = store.get(MUTE_KEY) === "1";
   let audio = null;
@@ -229,7 +231,8 @@
   };
   requestAnimationFrame(pollPad);
 
-  odin.runWasm("game.wasm", null, {
+  // 9f48206-1795775269 is stamped by tools/build.sh so a new build is never mixed with cached old files.
+  odin.runWasm("game.wasm?v=9f48206-1795775269", null, {
     canvas: {
       fill_rect: (x, y, w, h, rgb, alpha) => {
         ctx.globalAlpha = alpha; ctx.fillStyle = css(rgb); ctx.fillRect(x, y, w, h); ctx.globalAlpha = 1;
@@ -244,6 +247,8 @@
       play_sound: (id) => playSound(id),
       store_save: (ptr, len) => store.set(SAVE_KEY, toHex(memory.loadBytes(ptr, len))),
       toggle_mute: () => flipMute(),
+      clear_save: () => { try { localStorage.removeItem(SAVE_KEY); } catch (e) {} },
+      store_best: (score) => store.set(BEST_KEY, String(score)),
     },
   }, memory).then(() => {
     // QA: ?seed=N builds a repeatable world and leaves the real save alone.
@@ -266,7 +271,9 @@
       memory.loadBytes(ex().save_buffer(), n).set(bytes.subarray(0, n));
       saveLen = bytes.length;
     }
-    ex().boot(hi | 0, lo | 0, seed !== null, muted, saveLen);
+    const bestText = store.get(BEST_KEY);
+    const best = bestText !== null && /^\d{1,9}$/.test(bestText) ? parseInt(bestText, 10) : -1;
+    ex().boot(hi | 0, lo | 0, seed !== null, muted, saveLen, best);
   });
 </script>
 </body>
