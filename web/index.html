@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Seafarers of SPLORR!!</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a1220; color: #6a7a90; font: 12px/1.4 monospace; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  canvas { image-rendering: pixelated; touch-action: none; display: block; }
+  footer { margin-top: 8px; text-align: center; max-width: 90vw; }
+  footer a { color: #aab; }
+</style>
+</head>
+<body>
+<canvas id="screen" width="400" height="240"></canvas>
+<footer>
+  Seafarers of SPLORR!! by TheGrumpyGameDev. Tiles: Bountiful Bits by VEXED (CC0). Font m6x11 by Daniel Linssen.
+  Made in Odin by an AI agent (Claude Code) at the author's direction.<span class="ll-only" hidden> Feedback by LootLocker.</span><br>
+  Keys: arrows or W/S, Enter, Esc, 1 to 9, M to mute.<br>
+  <span class="ll-only" hidden><a href="#" id="feedback-link">Send feedback</a> · </span><a href="https://thegrumpygamedev.itch.io/">itch.io</a> · <a href="https://playdeezgames.github.io/oeuvre-of-splorr/">more games</a>
+</footer>
+<script type="text/javascript" src="odin.js"></script>
+<script src="lootlocker.js"></script>
+<script>
+  // Feedback through the shared SPLORR!! LootLocker kit (splorr/Tech/LootLocker.md in the vault). This game has no
+  // LootLocker game yet: until domain and key are filled in and the console has Game feedback categories, the
+  // link stays hidden.
+  (function () {
+    const LL_DOMAIN = "", LL_KEY = "";
+    if (!LL_DOMAIN || !LL_KEY) return;
+    const ll = LootLocker({ domain: LL_DOMAIN, key: LL_KEY, version: "1.0.0", idKey: "seafarers-of-splorr.id" });
+    ll.feedbackCategories("game").then(cats => {
+      if (!cats.length) return;
+      const feedback = ll.feedbackDialog({ game: "Seafarers of SPLORR!!" });
+      for (const el of document.querySelectorAll(".ll-only")) el.hidden = false;
+      document.getElementById("feedback-link").addEventListener("click", e => { e.preventDefault(); feedback.open(); });
+    }).catch(() => { /* offline or not set up: no link */ });
+  })();
+</script>
+<script>
+  const cv = document.getElementById("screen");
+  const ctx = cv.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  const css = (rgb) => "#" + (rgb >>> 0).toString(16).padStart(6, "0");
+  const SAVE_KEY = "seafarers-of-splorr:save", MUTE_KEY = "seafarers-of-splorr:muted";
+  const store = {
+    get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} },
+  };
+
+  // Whole-number zoom keeps the pixels crisp.
+  const fit = () => {
+    const z = Math.max(1, Math.floor(Math.min(innerWidth / cv.width, (innerHeight - 72) / cv.height))); // room for the footer
+    cv.style.width = cv.width * z + "px";
+    cv.style.height = cv.height * z + "px";
+  };
+  addEventListener("resize", fit);
+  fit();
+
+  const tiles = new Image();
+  tiles.src = "natural.png"; // Bountiful Bits Natural, coloured, no background: 10 by 10 tiles, no gaps
+
+  // Bitmap font: m6x11, ASCII 32..126 in a 16x6 grid of 10x14 cells, 11 rows above the baseline.
+  const FONT_W = 10, FONT_H = 14, FONT_BASE = 11;
+  const font = new Image();
+  font.src = "font.png";
+  const fontAdvance = [];
+  const fontTinted = new Map();
+  font.onload = () => {
+    const probe = document.createElement("canvas");
+    probe.width = font.width; probe.height = font.height;
+    const pc = probe.getContext("2d");
+    pc.drawImage(font, 0, 0);
+    const px = pc.getImageData(0, 0, font.width, font.height).data;
+    for (let i = 0; i < 95; i++) {
+      const cx = (i % 16) * FONT_W, cy = Math.floor(i / 16) * FONT_H;
+      let right = -1;
+      for (let x = 0; x < FONT_W; x++)
+        for (let y = 0; y < FONT_H; y++)
+          if (px[((cy + y) * font.width + cx + x) * 4 + 3] > 0) right = Math.max(right, x);
+      fontAdvance[i] = right < 0 ? 4 : right + 2; // ink plus one pixel of spacing
+    }
+  };
+  const tintedFont = (rgb) => {
+    let c = fontTinted.get(rgb);
+    if (!c) {
+      c = document.createElement("canvas");
+      c.width = font.width; c.height = font.height;
+      const g = c.getContext("2d");
+      g.drawImage(font, 0, 0);
+      g.globalCompositeOperation = "source-in";
+      g.fillStyle = css(rgb);
+      g.fillRect(0, 0, c.width, c.height);
+      fontTinted.set(rgb, c);
+    }
+    return c;
+  };
+  const drawBitmapText = (x, y, str, rgb, scale, centered) => {
+    if (!fontAdvance.length) return; // font not decoded yet
+    const idx = (ch) => { const i = ch.charCodeAt(0) - 32; return i >= 0 && i < 95 ? i : 0; };
+    let width = 0;
+    for (const ch of str) width += fontAdvance[idx(ch)] * scale;
+    let px = Math.round(centered ? x - width / 2 : x);
+    const top = Math.round(y) - FONT_BASE * scale;
+    const sheet = tintedFont(rgb);
+    for (const ch of str) {
+      const i = idx(ch);
+      if (px + fontAdvance[i] * scale > cv.width) break; // clip at the right edge rather than wrap or shift
+      ctx.drawImage(sheet, (i % 16) * FONT_W, Math.floor(i / 16) * FONT_H, FONT_W, FONT_H,
+                    px, top, FONT_W * scale, FONT_H * scale);
+      px += fontAdvance[i] * scale;
+    }
+  };
+
+  // The ship, drawn rather than taken from a sheet so it can turn to any heading. Points up (north) at heading 0.
+  const drawShip = (x, y, heading) => {
+    ctx.save();
+    ctx.translate(Math.round(x), Math.round(y));
+    ctx.rotate(heading * Math.PI / 180);
+    ctx.fillStyle = "#0e1a2e"; // wake shadow
+    ctx.beginPath(); ctx.moveTo(0, -6); ctx.lineTo(4, -1); ctx.lineTo(3, 6); ctx.lineTo(-3, 6); ctx.lineTo(-4, -1); ctx.closePath();
+    ctx.globalAlpha = 0.5; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.fillStyle = "#8a5520"; // hull
+    ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(3, -2); ctx.lineTo(3, 5); ctx.lineTo(-3, 5); ctx.lineTo(-3, -2); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#f4ecd8"; // sail, across the hull
+    ctx.fillRect(-5, -1, 10, 2);
+    ctx.fillStyle = "#5a3410"; // mast
+    ctx.fillRect(-1, -1, 2, 2);
+    ctx.restore();
+  };
+
+  // Sounds are small synthesised blips; order matches `Sound` in game/game.odin.
+  // Each is a list of [frequency Hz, duration s] notes.
+  const SOUNDS = [
+    { wave: "triangle", notes: [[440, 0.03]] },                 // Move
+    { wave: "square", notes: [[523, 0.04], [659, 0.06]] },      // Select
+    { wave: "square", notes: [[196, 0.08], [147, 0.1]] },       // Deny
+  ];
+  let muted = store.get(MUTE_KEY) === "1";
+  let audio = null;
+  const unlock = () => {
+    if (audio) return;
+    try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; }
+  };
+  addEventListener("pointerdown", unlock);
+  addEventListener("keydown", unlock);
+  const playSound = (id) => {
+    const s = SOUNDS[id];
+    if (muted || !audio || !s) return;
+    let t = audio.currentTime;
+    for (const [f, d] of s.notes) {
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.type = s.wave; o.frequency.value = f;
+      g.gain.setValueAtTime(0.06, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + d);
+      o.connect(g).connect(audio.destination);
+      o.start(t); o.stop(t + d);
+      t += d;
+    }
+  };
+  const flipMute = () => { muted = !muted; store.set(MUTE_KEY, muted ? "1" : "0"); return muted; };
+
+  // Saves are stored as hex text.
+  const toHex = (bytes) => Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+  const fromHex = (s) => {
+    if (!s || s.length % 2 || /[^0-9a-f]/i.test(s)) return null;
+    const out = new Uint8Array(s.length / 2);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(s.substr(i * 2, 2), 16);
+    return out;
+  };
+
+  const memory = new odin.WasmMemoryInterface();
+  const ex = () => memory.exports;
+
+  // A tap or click, in the canvas's logical pixels.
+  cv.addEventListener("pointerdown", (e) => {
+    const r = cv.getBoundingClientRect();
+    const x = Math.floor((e.clientX - r.left) * cv.width / r.width);
+    const y = Math.floor((e.clientY - r.top) * cv.height / r.height);
+    if (ex() && ex().click) ex().click(x, y);
+  });
+
+  // Keyboard and gamepad send one command at a time; order matches `Action` in game/game.odin.
+  const ACTION = { up: 0, down: 1, confirm: 2, back: 3 };
+  const send = (a) => { if (ex() && ex().input) ex().input(a); };
+  const KEYS = {
+    ArrowUp: ACTION.up, KeyW: ACTION.up, ArrowDown: ACTION.down, KeyS: ACTION.down,
+    Enter: ACTION.confirm, Space: ACTION.confirm, NumpadEnter: ACTION.confirm,
+    Escape: ACTION.back, Backspace: ACTION.back,
+  };
+  addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const digit = /^(Digit|Numpad)([1-9])$/.exec(e.code);
+    if (digit) { e.preventDefault(); if (!e.repeat && ex() && ex().pick) ex().pick(+digit[2] - 1); return; }
+    if (e.code === "KeyM") { e.preventDefault(); if (!e.repeat && ex() && ex().set_muted) ex().set_muted(flipMute()); return; }
+    if (!(e.code in KEYS)) return;
+    e.preventDefault();
+    if (!e.repeat || KEYS[e.code] === ACTION.up || KEYS[e.code] === ACTION.down) send(KEYS[e.code]);
+  });
+
+  // Gamepad (standard layout): d-pad or left stick moves the cursor, A confirms, B goes back. A held direction repeats.
+  const pad = { held: new Map(), next: new Map(), confirm: false, back: false };
+  const REPEAT_FIRST = 300, REPEAT = 110;
+  const pollPad = (now) => {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const dirs = [false, false], any = { confirm: false, back: false };
+    for (const p of pads) {
+      if (!p || p.mapping !== "standard") continue;
+      const b = (i) => p.buttons[i] && p.buttons[i].pressed;
+      const ay = p.axes[1] || 0;
+      dirs[0] = dirs[0] || b(12) || ay < -0.5;
+      dirs[1] = dirs[1] || b(13) || ay > 0.5;
+      any.confirm = any.confirm || b(0) || b(9);
+      any.back = any.back || b(1);
+    }
+    dirs.forEach((on, a) => {
+      if (!on) { pad.held.delete(a); return; }
+      if (!pad.held.has(a)) { pad.held.set(a, true); pad.next.set(a, now + REPEAT_FIRST); send(a); }
+      else if (now >= pad.next.get(a)) { pad.next.set(a, now + REPEAT); send(a); }
+    });
+    if (any.confirm && !pad.confirm) send(ACTION.confirm);
+    if (any.back && !pad.back) send(ACTION.back);
+    pad.confirm = any.confirm; pad.back = any.back;
+    requestAnimationFrame(pollPad);
+  };
+  requestAnimationFrame(pollPad);
+
+  odin.runWasm("game.wasm", null, {
+    canvas: {
+      fill_rect: (x, y, w, h, rgb, alpha) => {
+        ctx.globalAlpha = alpha; ctx.fillStyle = css(rgb); ctx.fillRect(x, y, w, h); ctx.globalAlpha = 1;
+      },
+      draw_tile: (col, row, x, y) => {
+        if (tiles.complete) ctx.drawImage(tiles, col * 10, row * 10, 10, 10, Math.round(x), Math.round(y), 10, 10);
+      },
+      draw_ship: (x, y, heading) => drawShip(x, y, heading),
+      draw_text: (x, y, ptr, len, rgb, scale, centered) => {
+        drawBitmapText(x, y, memory.loadString(ptr, len), rgb, scale, centered);
+      },
+      play_sound: (id) => playSound(id),
+      store_save: (ptr, len) => store.set(SAVE_KEY, toHex(memory.loadBytes(ptr, len))),
+      toggle_mute: () => flipMute(),
+    },
+  }, memory).then(() => {
+    // QA: ?seed=N builds a repeatable world and leaves the real save alone.
+    const q = new URLSearchParams(location.search).get("seed");
+    let seed = null;
+    if (q !== null && /^\d{1,20}$/.test(q)) { try { seed = BigInt.asUintN(64, BigInt(q)); } catch (e) { seed = null; } }
+    let hi, lo;
+    if (seed !== null) {
+      hi = Number(seed >> 32n); lo = Number(seed & 0xffffffffn);
+    } else {
+      const r = new Uint32Array(2);
+      crypto.getRandomValues(r);
+      hi = r[0]; lo = r[1];
+    }
+    let saveLen = 0;
+    const bytes = seed === null ? fromHex(store.get(SAVE_KEY)) : null;
+    if (bytes) {
+      // Never write past the game's buffer; a longer save is passed with its real length so the game refuses it.
+      const n = Math.min(bytes.length, ex().save_size());
+      memory.loadBytes(ex().save_buffer(), n).set(bytes.subarray(0, n));
+      saveLen = bytes.length;
+    }
+    ex().boot(hi | 0, lo | 0, seed !== null, muted, saveLen);
+  });
+</script>
+</body>
+</html>
