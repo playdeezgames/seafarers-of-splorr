@@ -6,6 +6,18 @@ import "core:math"
 // world is rebuilt from the seed, so a new generator makes an old save describe a different sea). An older version is
 // refused with Load_Error.Version and the page says so.
 //
+// Version 6 (the price book) is version 5 followed by, for each of the 40 island slots: the turn its prices were
+// last seen (u16, 0xFFFF for never) and the price it asked for each of the 12 goods (u16, 0 if it does not trade it).
+// Older versions load with an empty book (the docked island's prices are recorded on load).
+//
+// Version 5 (Phase 4) is version 4 followed by:
+// 1042  u8, 3 x delivery    offers at the docked island: count, then three slots
+// 1079  u8, 3 x delivery    deliveries carried: count, then three slots
+// 1116  u8                  street vendor lots left
+// 1117  u16                 deliveries made
+// A delivery is 12 bytes: from u8, to u8, reward u16, due turn u16, six word indices u8.
+// Older versions load with nothing offered or carried and a full vendor.
+//
 // Version 4 (Phase 3) is version 3 followed by:
 // 58  u16 x 12              cargo, by Good
 // 82  u16 x 40 x 6 x 2      markets: for each island slot, for each commodity, supply then demand (thousandths)
@@ -33,8 +45,12 @@ import "core:math"
 // 34  u8     speed (percent)
 // 35  u8     docked island, 255 at sea
 // 36  u64    charted islands, bit i for island i
-SAVE_VERSION :: 4
-SAVE_SIZE :: 82 + ISLAND_MAX * len(Commodity) * 4
+SAVE_VERSION :: 6
+SAVE_V4_SIZE :: 82 + ISLAND_MAX * len(Commodity) * 4
+SAVE_V5_SIZE :: SAVE_V4_SIZE + 2 * (1 + 12 * 3) + 1 + 2
+SAVE_SIZE :: SAVE_V5_SIZE + ISLAND_MAX * (2 + 2 * len(Good))
+NOT_SEEN :: 0xFFFF
+PRICE_MAX :: 60_000
 SAVE_V3_SIZE :: 58
 SAVE_V2_SIZE :: 44
 NOT_DOCKED :: 255
@@ -71,6 +87,20 @@ save_encode :: proc(g: ^Game, buf: ^[SAVE_SIZE]u8) {
 	put_u16(buf[54:], u16(g.foul[.Port]))
 	put_u16(buf[56:], u16(g.foul[.Starboard]))
 	for good in Good {put_u16(buf[58 + 2 * int(good):], u16(g.cargo[good]))}
+	at5 := SAVE_V4_SIZE
+	put_deliveries(buf[at5:], g.offers[:g.n_offers])
+	at5 += 1 + 12 * 3
+	put_deliveries(buf[at5:], g.carried[:g.n_carried])
+	at5 += 1 + 12 * 3
+	buf[at5] = u8(g.vendor_stock)
+	put_u16(buf[at5 + 1:], u16(min(g.deliveries_made, 65535)))
+	at6 := SAVE_V5_SIZE
+	for i in 0 ..< ISLAND_MAX {
+		seen := g.seen[i]
+		put_u16(buf[at6:], seen.turn == NEVER_SEEN || i >= g.n_islands ? NOT_SEEN : u16(seen.turn))
+		for good in Good {put_u16(buf[at6 + 2 + 2 * int(good):], u16(clamp(seen.price[good], 0, PRICE_MAX)))}
+		at6 += 2 + 2 * len(Good)
+	}
 	at := 82
 	for i in 0 ..< ISLAND_MAX {
 		for c in Commodity {
@@ -87,9 +117,10 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 	if data[0] != 'S' || data[1] != 'O' || data[2] != 'S' {return .Magic}
 	version := data[3]
 	if version < 2 || version > SAVE_VERSION {return .Version} // before the size: versions differ in size
-	sizes := [5]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_SIZE}
+	sizes := [7]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_V4_SIZE, SAVE_V5_SIZE, SAVE_SIZE}
 	if len(data) != sizes[version] {return .Size}
 	turn := get_u32(data[20:])
+	turn_saved := turn
 	x := transmute(f32)get_u32(data[24:])
 	y := transmute(f32)get_u32(data[28:])
 	heading := int(get_u16(data[32:]))
@@ -122,6 +153,41 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 		t.money, t.rations, t.satiety, t.health = int(money), int(rations), satiety, health
 		t.foul = {.Port = port, .Starboard = starboard}
 	}
+	if version >= 5 {
+		at := SAVE_V4_SIZE
+		ok: bool
+		if t.n_offers, ok = get_deliveries(t, data[at:], t.offers[:]); !ok {return .Range}
+		at += 1 + 12 * 3
+		if t.n_carried, ok = get_deliveries(t, data[at:], t.carried[:]); !ok {return .Range}
+		at += 1 + 12 * 3
+		for k in 0 ..< t.n_offers {
+			if t.offers[k].from != t.docked {return .Range} // offers only exist at the island you are docked at
+		}
+		t.vendor_stock = int(data[at])
+		if t.vendor_stock > VENDOR_STOCK {return .Range}
+		t.deliveries_made = int(get_u16(data[at + 1:]))
+	} else {
+		t.n_offers = 0
+	}
+	if version >= 6 {
+		at := SAVE_V5_SIZE
+		for i in 0 ..< ISLAND_MAX {
+			turn := int(get_u16(data[at:]))
+			if turn == NOT_SEEN {
+				t.seen[i] = {turn = NEVER_SEEN}
+			} else {
+				if i >= t.n_islands || turn > int(turn_saved) {return .Range}
+				t.seen[i].turn = turn
+			}
+			for good in Good {
+				p := int(get_u16(data[at + 2 + 2 * int(good):]))
+				if p > PRICE_MAX {return .Range}
+				traded := i < t.n_islands && good in t.trades[i]
+				t.seen[i].price[good] = traded && turn != NOT_SEEN ? p : 0 // only what the island trades
+			}
+			at += 2 + 2 * len(Good)
+		}
+	}
 	if version < 4 {
 		t.money = START_MONEY
 	} else {
@@ -151,6 +217,10 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 	t.muted = g.muted
 	t.best, t.has_best = g.best, g.has_best
 	t.log, t.log_len = g.log, g.log_len
+	if version < 6 {
+		for i in 0 ..< ISLAND_MAX {t.seen[i] = {turn = NEVER_SEEN}}
+		record_prices(t)
+	}
 	t.has_voyage = true
 	t.screen = .Title
 	g^ = t^
@@ -180,4 +250,37 @@ get_u32 :: proc(b: []u8) -> (v: u32) {
 get_u64 :: proc(b: []u8) -> (v: u64) {
 	for i in 0 ..< 8 {v |= u64(b[i]) << (8 * uint(i))}
 	return
+}
+
+put_deliveries :: proc(b: []u8, ds: []Delivery) {
+	b[0] = u8(len(ds))
+	for d, k in ds {
+		o := b[1 + 12 * k:]
+		o[0], o[1] = u8(d.from), u8(d.to)
+		put_u16(o[2:], u16(d.reward))
+		put_u16(o[4:], u16(d.due))
+		for w in 0 ..< 6 {o[6 + w] = d.words[w]}
+	}
+}
+
+// Reads a count and up to len(out) deliveries, checking every field against the world in t.
+get_deliveries :: proc(t: ^Game, b: []u8, out: []Delivery) -> (n: int, ok: bool) {
+	n = int(b[0])
+	if n > len(out) {return 0, false}
+	for k in 0 ..< n {
+		o := b[1 + 12 * k:]
+		d := Delivery {
+			from   = int(o[0]),
+			to     = int(o[1]),
+			reward = int(get_u16(o[2:])),
+			due    = int(get_u16(o[4:])),
+		}
+		if d.from >= t.n_islands || d.to >= t.n_islands || d.from == d.to || d.reward > REWARD_MAX {return 0, false}
+		for w in 0 ..< 6 {
+			if o[6 + w] >= 8 {return 0, false}
+			d.words[w] = o[6 + w]
+		}
+		out[k] = d
+	}
+	return n, true
 }

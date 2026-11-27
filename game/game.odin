@@ -37,6 +37,12 @@ Sub :: enum u8 {
 	Careen,
 	Market, // the goods this island trades, and rations
 	Trade, // buy or sell one good (g.trade_good)
+	Deliveries, // the delivery service: offers, and what you carry
+	Offer, // one offer (g.pick), shown as a letter
+	Carried, // the deliveries aboard
+	Carried_Detail, // one carried delivery (g.pick)
+	Vendor, // the street vendor
+	Book, // the price book for g.book_good, opened from the chart
 }
 
 // Keyboard and gamepad commands; order matches ACTION in web/index.html.
@@ -77,6 +83,12 @@ Cmd :: enum u8 {
 	Pick_Good, // arg: Good, or RATIONS
 	Buy, // arg: how many (a large number for "max")
 	Sell, // arg: how many (a large number for "all")
+	Pick_Offer, // arg: offer index
+	Accept,
+	Pick_Carried, // arg: carried index
+	Abandon,
+	Vendor_Buy, // arg: lots
+	Book_Step, // arg: +1 or -1 through the goods
 }
 
 RATIONS :: -1 // Pick_Good's arg for the rations stall
@@ -129,6 +141,16 @@ Game :: struct {
 	usual:      [ISLAND_MAX]Market, // from the seed: where markets drift back to
 	trades:     [ISLAND_MAX]bit_set[Good], // from the seed
 	trade_good: int, // the good open in the Trade submenu, or RATIONS
+	districts:  [ISLAND_MAX]bit_set[District], // from the seed
+	offers:     [OFFERS_MAX]Delivery, // at the docked island's delivery service
+	n_offers:   int,
+	carried:    [CARRY_MAX]Delivery,
+	n_carried:  int,
+	deliveries_made: int,
+	vendor_stock: int, // lots left at the docked island's street vendor
+	pick:       int, // the offer or carried delivery open in a submenu
+	seen:       [ISLAND_MAX]Seen, // the price book
+	book_good:  Good,
 	muted:      bool, // mirrors the page's mute setting, for the menu label
 	// Requests to the web layer, cleared by it.
 	want_save:  bool,
@@ -160,6 +182,10 @@ start_world :: proc(g: ^Game, seed: u64) {
 	g.money = START_MONEY
 	g.cargo = {}
 	generate_markets(g)
+	generate_districts(g)
+	for i in 0 ..< ISLAND_MAX {g.seen[i] = {turn = NEVER_SEEN}}
+	g.n_offers, g.n_carried, g.deliveries_made = 0, 0, 0
+	g.vendor_stock = VENDOR_STOCK
 	g.rations = START_RATIONS
 	g.satiety = STAT_MAX
 	g.health = STAT_MAX
@@ -172,6 +198,8 @@ start_world :: proc(g: ^Game, seed: u64) {
 		}
 	}
 	look(g)
+	make_offers(g)
+	record_prices(g)
 }
 
 menu :: proc(g: ^Game) -> (m: Menu) {
@@ -229,10 +257,41 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			}
 			add(g, &m, "Back", .Back)
 			return
-		case .None, .Heading, .Adjust, .Speed, .Sail, .Head_For, .Dock, .Chart, .Careen:
+		case .Deliveries:
+			for k in 0 ..< g.n_offers {
+				o := g.offers[k]
+				addf(g, &m, .Pick_Offer, k, "To %s, %d", island_name(g, o.to), o.reward)
+			}
+			addf(g, &m, .Open, int(Sub.Carried), "Carried: %d of %d", g.n_carried, CARRY_MAX)
+			add(g, &m, "Back", .Back)
+			return
+		case .Offer:
+			add(g, &m, "Accept", .Accept)
+			add(g, &m, "Back", .Back)
+			return
+		case .Carried:
+			for k in 0 ..< g.n_carried {
+				d := g.carried[k]
+				addf(g, &m, .Pick_Carried, k, "%s, %d", island_name(g, d.to), pay_for(g, d))
+			}
+			add(g, &m, "Back", .Back)
+			return
+		case .Carried_Detail:
+			add(g, &m, "Abandon it", .Abandon)
+			add(g, &m, "Back", .Back)
+			return
+		case .Vendor:
+			addf(g, &m, .Vendor_Buy, 1, "Buy %d rations at %d", VENDOR_LOT, vendor_price(g, g.docked))
+			addf(g, &m, .Vendor_Buy, 5, "Buy %d", 5 * VENDOR_LOT)
+			add(g, &m, "Back", .Back)
+			return
+		case .None, .Heading, .Adjust, .Speed, .Sail, .Head_For, .Dock, .Chart, .Careen, .Book:
 		}
+		ds := g.districts[g.docked] if g.docked != NO_ISLAND else {}
 		add(g, &m, "Cast off", .Undock)
 		add(g, &m, "Market", .Open, int(Sub.Market))
+		if .Delivery_Service in ds {add(g, &m, "Delivery service", .Open, int(Sub.Deliveries))}
+		if .Street_Vendor in ds {add(g, &m, "Street vendor", .Open, int(Sub.Vendor))}
 		add(g, &m, "Careen", .Open, int(Sub.Careen))
 		add(g, &m, sound_label, .Sound_Toggle)
 		add(g, &m, "Back to title", .To_Title)
@@ -273,7 +332,7 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			for j in 0 ..< n {
 				i := near[j]
 				d := int(math.round(island_distance(g, i, g.ship.x, g.ship.y)))
-				addf(g, &m, .Head_For, i, "%s %d %s", island_name(g, i), d, compass(bearing_to(g, i)))
+				addf(g, &m, .Head_For, i, "%s%s %d %s", is_destination(g, i) ? "*" : "", island_name(g, i), d, compass(bearing_to(g, i)))
 			}
 			add(g, &m, "Back", .Back)
 		case .Dock:
@@ -282,8 +341,13 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			for j in 0 ..< n {add(g, &m, island_name(g, near[j]), .Dock, near[j])}
 			add(g, &m, "Back", .Back)
 		case .Chart:
+			add(g, &m, "Price book", .Open, int(Sub.Book))
 			add(g, &m, "Back", .Back)
-		case .Careen, .Market, .Trade:
+		case .Book:
+			add(g, &m, "Next good", .Book_Step, 1)
+			add(g, &m, "Previous good", .Book_Step, -1)
+			add(g, &m, "Back", .Back)
+		case .Careen, .Market, .Trade, .Deliveries, .Offer, .Carried, .Carried_Detail, .Vendor:
 			add(g, &m, "Back", .Back)
 		}
 	}
@@ -381,7 +445,13 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		if arg < 0 || arg > int(max(Sub)) {return}
 		open(g, Sub(arg))
 	case .Back:
-		open(g, g.sub == .Trade ? .Market : .None)
+		#partial switch g.sub {
+		case .Trade: open(g, .Market)
+		case .Offer, .Carried: open(g, .Deliveries)
+		case .Carried_Detail: open(g, .Carried)
+		case .Book: open(g, .Chart)
+		case: open(g, .None)
+		}
 	case .Set_Heading:
 		g.ship.heading = wrap_heading(arg)
 		logf(g, "Heading %03d %s.", g.ship.heading, compass(g.ship.heading))
@@ -433,6 +503,13 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		open(g, .None)
 		sound(g, .Dock)
 		logf(g, "Docked at %s.", island_name(g, target))
+		if done, paid := complete_deliveries(g); done > 0 {
+			sound(g, .Coins)
+			logf(g, "Delivered %d: paid %d.", done, paid)
+		}
+		make_offers(g)
+		record_prices(g)
+		g.vendor_stock = VENDOR_STOCK
 		g.want_save = true
 	case .Careen:
 		if arg < 0 || arg > int(max(Side)) {return}
@@ -456,6 +533,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		if n > 0 {
 			sound(g, .Coins)
 			logf(g, "Bought %d for %d.", n, cost)
+			record_prices(g)
 			g.want_save = true
 		} else {
 			sound(g, .Deny)
@@ -468,14 +546,53 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		if n > 0 {
 			sound(g, .Coins)
 			logf(g, "Sold %d for %d.", n, takings)
+			record_prices(g)
 			g.want_save = true
 		} else {
 			sound(g, .Deny)
 			logf(g, "None aboard to sell.")
 		}
+	case .Pick_Offer:
+		if g.screen != .Docked || arg < 0 || arg >= g.n_offers {return}
+		g.pick = arg
+		open(g, .Offer)
+	case .Accept:
+		if g.sub != .Offer {return}
+		if !accept_offer(g, g.pick) {
+			sound(g, .Deny)
+			logf(g, "You carry %d already.", CARRY_MAX)
+			return
+		}
+		d := g.carried[g.n_carried - 1]
+		logf(g, "For %s by turn %d.", island_name(g, d.to), d.due)
+		open(g, .Deliveries)
+		g.want_save = true
+	case .Pick_Carried:
+		if arg < 0 || arg >= g.n_carried {return}
+		g.pick = arg
+		open(g, .Carried_Detail)
+	case .Abandon:
+		if g.sub != .Carried_Detail || !abandon(g, g.pick) {return}
+		logf(g, "Delivery abandoned.")
+		open(g, .Carried)
+		g.want_save = true
+	case .Vendor_Buy:
+		if g.sub != .Vendor {return}
+		n, cost := buy_from_vendor(g, arg)
+		if n > 0 {
+			sound(g, .Coins)
+			logf(g, "Bought %d for %d.", n * VENDOR_LOT, cost)
+			g.want_save = true
+		} else {
+			sound(g, .Deny)
+			logf(g, g.vendor_stock == 0 ? "Sold out today." : "Not enough money.")
+		}
+	case .Book_Step:
+		g.book_good = Good((int(g.book_good) + len(Good) + (arg < 0 ? -1 : 1)) % len(Good))
 	case .Undock:
 		if g.docked != NO_ISLAND {logf(g, "Cast off from %s.", island_name(g, g.docked))}
 		g.docked = NO_ISLAND
+		g.n_offers = 0 // offers stay at the island
 		g.screen = .Sea
 		open(g, .None)
 		g.want_save = true

@@ -114,6 +114,25 @@
     }
   };
 
+  // Greedy word wrap at the font's real advances. Returns the baseline after the last line.
+  const LINE_H = 14;
+  const textWidth = (str) => {
+    let w = 0;
+    for (const ch of str) { const i = ch.charCodeAt(0) - 32; w += fontAdvance[i >= 0 && i < 95 ? i : 0] || 0; }
+    return w;
+  };
+  const drawWrapped = (x, y, w, str, rgb) => {
+    if (!fontAdvance.length) return y;
+    let line = "";
+    for (const word of str.split(" ")) {
+      const next = line ? line + " " + word : word;
+      if (line && textWidth(next) > w) { drawBitmapText(x, y, line, rgb, 1, false); y += LINE_H; line = word; }
+      else line = next;
+    }
+    if (line) { drawBitmapText(x, y, line, rgb, 1, false); y += LINE_H; }
+    return y;
+  };
+
   // The ship, drawn rather than taken from a sheet so it can turn to any heading. Points up (north) at heading 0.
   const drawShip = (x, y, heading) => {
     ctx.save();
@@ -245,6 +264,7 @@
       draw_text: (x, y, ptr, len, rgb, scale, centered) => {
         drawBitmapText(x, y, memory.loadString(ptr, len), rgb, scale, centered);
       },
+      draw_text_wrapped: (x, y, w, ptr, len, rgb) => drawWrapped(x, y, w, memory.loadString(ptr, len), rgb),
       play_sound: (id) => playSound(id),
       store_save: (ptr, len) => store.set(SAVE_KEY, toHex(memory.loadBytes(ptr, len))),
       toggle_mute: () => flipMute(),

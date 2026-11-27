@@ -223,3 +223,43 @@ drift_markets :: proc(g: ^Game) {
 		}
 	}
 }
+
+// The price book: what each island asked for its goods when you last docked there, and when. Updated on docking and
+// after every trade (the user's request, November 27, 2026: compare last viewed prices, with their age).
+NEVER_SEEN :: -1
+
+Seen :: struct {
+	turn:  int, // NEVER_SEEN until you dock there
+	price: [Good]int, // what the island asked (its selling price); 0 for goods it does not trade
+}
+
+record_prices :: proc(g: ^Game) {
+	i := g.docked
+	if i == NO_ISLAND {return}
+	g.seen[i].turn = g.turn
+	for good in Good {g.seen[i].price[good] = good in g.trades[i] ? sell_price(g, i, good) : 0}
+}
+
+// What the island would pay for a good it asked `asked` for (the same 10% below as buy_price).
+paid_for :: proc(asked: int) -> int {
+	return max(1, asked * (100 - DISCOUNT) / 100)
+}
+
+// Islands with a recorded price for the good, dearest first (best to sell at). Returns how many were written.
+book_rows :: proc(g: ^Game, good: Good, out: []int) -> int {
+	all: [ISLAND_MAX]int
+	n := 0
+	for i in 0 ..< g.n_islands {
+		if g.seen[i].turn == NEVER_SEEN || good not_in g.trades[i] {continue}
+		pos := n
+		for pos > 0 && g.seen[all[pos - 1]].price[good] < g.seen[i].price[good] {
+			all[pos] = all[pos - 1]
+			pos -= 1
+		}
+		all[pos] = i
+		n += 1
+	}
+	n = min(n, len(out))
+	copy(out, all[:n])
+	return n
+}

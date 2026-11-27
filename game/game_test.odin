@@ -759,7 +759,7 @@ trade_state_round_trips :: proc(t: ^testing.T) {
 	put_u16(bad[82:], MARKET_MIN - 1)
 	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
 	bad = good
-	put_u16(bad[SAVE_SIZE - 2:], 1000) // a market for an island slot that does not exist
+	put_u16(bad[SAVE_V4_SIZE - 2:], 1000) // a market for an island slot that does not exist
 	if g.n_islands < ISLAND_MAX {testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)}
 	testing.expect(t, !h.has_voyage)
 
@@ -769,4 +769,302 @@ trade_state_round_trips :: proc(t: ^testing.T) {
 	testing.expect_value(t, save_decode(h, v3[:SAVE_V3_SIZE]), Load_Error.None)
 	testing.expect_value(t, h.money, START_MONEY)
 	testing.expect_value(t, hold_used(h), 0)
+}
+
+// A fresh voyage whose home port has every district.
+busy_port :: proc(g: ^Game) {
+	title(g, 31)
+	do_cmd(g, .New_Voyage, 0)
+	g.districts[0] = {.Delivery_Service, .Street_Vendor, .Dark_Alley}
+	make_offers(g)
+}
+
+@(test)
+districts_come_from_the_seed :: proc(t: ^testing.T) {
+	g, h := new(Game), new(Game)
+	defer {free(g); free(h)}
+	title(g, 8)
+	title(h, 8)
+	testing.expect(t, g.districts == h.districts)
+	with := 0
+	for i in 0 ..< g.n_islands {if .Delivery_Service in g.districts[i] {with += 1}}
+	testing.expect(t, with > 0 && with < g.n_islands)
+}
+
+@(test)
+docked_menu_shows_the_districts :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	busy_port(g)
+	m := menu(g)
+	testing.expect_value(t, m.n, 7) // cast off, market, deliveries, vendor, careen, sound, title
+	testing.expect_value(t, m.items[2].arg, int(Sub.Deliveries))
+	testing.expect_value(t, m.items[3].arg, int(Sub.Vendor))
+	g.districts[0] = {}
+	testing.expect_value(t, menu(g).n, 5)
+}
+
+@(test)
+offers_and_accepting :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	busy_port(g)
+	testing.expect_value(t, g.n_offers, OFFERS_MAX)
+	for k in 0 ..< g.n_offers {
+		o := g.offers[k]
+		d := leagues_between(g, 0, o.to)
+		testing.expect(t, o.from == 0 && o.to != 0)
+		testing.expect(t, o.reward >= 10 + d && o.reward <= 10 + 3 * d)
+		testing.expect_value(t, o.due, g.turn + DEADLINE_FACTOR * d)
+	}
+	g.islands[g.offers[0].to].charted = false
+	to := g.offers[0].to
+	do_cmd(g, .Open, int(Sub.Deliveries))
+	do_cmd(g, .Pick_Offer, 0)
+	testing.expect_value(t, g.sub, Sub.Offer)
+	do_cmd(g, .Accept, 0)
+	testing.expect_value(t, g.n_carried, 1)
+	testing.expect_value(t, g.n_offers, OFFERS_MAX - 1)
+	testing.expect(t, g.islands[to].charted) // accepting charts the destination
+	testing.expect(t, is_destination(g, to))
+	testing.expect_value(t, g.sub, Sub.Deliveries)
+	// Three at most.
+	do_cmd(g, .Pick_Offer, 0)
+	do_cmd(g, .Accept, 0)
+	do_cmd(g, .Pick_Offer, 0)
+	do_cmd(g, .Accept, 0)
+	testing.expect_value(t, g.n_carried, CARRY_MAX)
+	make_offers(g)
+	do_cmd(g, .Pick_Offer, 0)
+	do_cmd(g, .Accept, 0)
+	testing.expect_value(t, g.n_carried, CARRY_MAX)
+	testing.expect_value(t, g.n_offers, OFFERS_MAX)
+	// Abandoning one frees a slot.
+	do_cmd(g, .Back, 0)
+	do_cmd(g, .Open, int(Sub.Carried))
+	do_cmd(g, .Pick_Carried, 1)
+	do_cmd(g, .Abandon, 0)
+	testing.expect_value(t, g.n_carried, CARRY_MAX - 1)
+	testing.expect_value(t, g.sub, Sub.Carried)
+}
+
+@(test)
+delivering_pays_on_docking_and_late_pays_half :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	g.islands[0] = {x = 61, y = 60, charted = true}
+	g.land[60 * WORLD_SIZE + 61] = 1
+	g.islands[1] = {x = 20, y = 20, charted = true}
+	g.n_islands = 2
+	g.carried[0] = {from = 1, to = 0, reward = 100, due = g.turn + 50}
+	g.carried[1] = {from = 1, to = 0, reward = 60, due = g.turn - 1} // already late
+	g.carried[2] = {from = 0, to = 1, reward = 80, due = g.turn + 50}
+	g.n_carried = 3
+	money := g.money
+	do_cmd(g, .Dock, NO_ISLAND)
+	testing.expect_value(t, g.docked, 0)
+	testing.expect_value(t, g.money, money + 100 + 30)
+	testing.expect_value(t, g.n_carried, 1)
+	testing.expect_value(t, g.carried[0].to, 1)
+	testing.expect_value(t, g.deliveries_made, 2)
+}
+
+@(test)
+offers_stay_at_the_island :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	busy_port(g)
+	do_cmd(g, .Undock, 0)
+	testing.expect_value(t, g.n_offers, 0)
+	g.districts[0] = {}
+	do_cmd(g, .Dock, NO_ISLAND)
+	testing.expect_value(t, g.n_offers, 0) // no delivery service, no offers
+}
+
+@(test)
+the_street_vendor :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	busy_port(g)
+	for c in Commodity {g.markets[0].supply[c], g.markets[0].demand[c] = 1000, 1000}
+	testing.expect_value(t, vendor_price(g, 0), 1) // 0.6 grain: cheaper than the market's 4 for ten
+	do_cmd(g, .Open, int(Sub.Vendor))
+	rations := g.rations
+	do_cmd(g, .Vendor_Buy, 5)
+	testing.expect_value(t, g.rations, rations + 5 * VENDOR_LOT)
+	testing.expect_value(t, g.vendor_stock, VENDOR_STOCK - 5)
+	do_cmd(g, .Vendor_Buy, 100)
+	testing.expect_value(t, g.vendor_stock, 0) // sold out
+	testing.expect_value(t, g.rations, rations + VENDOR_STOCK * VENDOR_LOT)
+	do_cmd(g, .Back, 0)
+	do_cmd(g, .Undock, 0)
+	do_cmd(g, .Dock, NO_ISLAND)
+	testing.expect_value(t, g.vendor_stock, VENDOR_STOCK) // restocked for the next visit
+}
+
+@(test)
+every_docked_menu_fits :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	busy_port(g)
+	for s in Sub {
+		g.sub = s
+		g.pick = 0
+		m := menu(g)
+		testing.expect(t, m.n >= 1 && m.n <= MENU_MAX)
+		for k in 0 ..< m.n {testing.expect(t, len(m.items[k].label) < MENU_TEXT)}
+	}
+}
+
+@(test)
+delivery_text_reads_well :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	busy_port(g)
+	buf: [200]u8
+	text := delivery_text(g, g.offers[0], buf[:])
+	testing.expect(t, len(text) > 40)
+	testing.expect_value(t, text[:7], "Please ")
+	testing.expect_value(t, text[len(text) - 1], '.')
+}
+
+@(test)
+delivery_state_round_trips :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	busy_port(g)
+	do_cmd(g, .Open, int(Sub.Deliveries))
+	do_cmd(g, .Pick_Offer, 1)
+	do_cmd(g, .Accept, 0)
+	g.vendor_stock = 4
+	g.deliveries_made = 7
+	good: [SAVE_SIZE]u8
+	save_encode(g, &good)
+	h := new(Game)
+	defer free(h)
+	title(h, 3)
+	testing.expect_value(t, save_decode(h, good[:]), Load_Error.None)
+	testing.expect_value(t, h.n_offers, g.n_offers)
+	testing.expect_value(t, h.n_carried, 1)
+	testing.expect_value(t, h.carried[0], g.carried[0])
+	testing.expect_value(t, h.offers[0], g.offers[0])
+	testing.expect_value(t, h.vendor_stock, 4)
+	testing.expect_value(t, h.deliveries_made, 7)
+
+	title(h, 3)
+	bad := good
+	bad[SAVE_V4_SIZE + 37] = 4 // four carried
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = good
+	bad[SAVE_V4_SIZE + 37 + 2] = u8(g.n_islands) // carried to no island
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = good
+	bad[SAVE_V4_SIZE + 2 * 37] = VENDOR_STOCK + 1
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	testing.expect(t, !h.has_voyage)
+
+	// A Phase 3 save loads with nothing carried.
+	v4 := good
+	v4[3] = 4
+	testing.expect_value(t, save_decode(h, v4[:SAVE_V4_SIZE]), Load_Error.None)
+	testing.expect_value(t, h.n_carried, 0)
+	testing.expect_value(t, h.vendor_stock, VENDOR_STOCK)
+}
+
+@(test)
+the_price_book_records_on_docking_and_trading :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	trading_post(g) // docked at the home port, which trades flour, timber and pepper at par
+	record_prices(g)
+	testing.expect_value(t, g.seen[0].turn, 0)
+	testing.expect_value(t, g.seen[0].price[.Flour], 6)
+	testing.expect_value(t, g.seen[0].price[.Rum], 0) // not traded there
+	testing.expect_value(t, g.seen[1].turn, NEVER_SEEN)
+	do_cmd(g, .Pick_Good, int(Good.Flour))
+	do_cmd(g, .Buy, 50)
+	testing.expect(t, g.seen[0].price[.Flour] > 6) // trading updates the record
+	// Away from the island the record stays as it was, with its turn.
+	g.turn = 40
+	g.markets[0].demand[.Grain] = 3000
+	testing.expect(t, g.seen[0].price[.Flour] < sell_price(g, 0, .Flour))
+	testing.expect_value(t, g.seen[0].turn, 0)
+	testing.expect_value(t, paid_for(10), 9)
+}
+
+@(test)
+book_rows_sort_dearest_first :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	title(g, 4)
+	for i in 0 ..< 4 {
+		g.trades[i] = {.Pepper}
+		g.seen[i] = {turn = i}
+	}
+	g.seen[0].price[.Pepper] = 30
+	g.seen[1].price[.Pepper] = 50
+	g.seen[2].price[.Pepper] = 40
+	g.seen[3].turn = NEVER_SEEN // never docked: not listed
+	rows: [ISLAND_MAX]int
+	n := book_rows(g, .Pepper, rows[:])
+	testing.expect_value(t, n, 3)
+	testing.expect_value(t, rows[0], 1)
+	testing.expect_value(t, rows[1], 2)
+	testing.expect_value(t, rows[2], 0)
+	testing.expect_value(t, book_rows(g, .Flour, rows[:]), 0)
+}
+
+@(test)
+the_price_book_from_the_chart :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	title(g, 4)
+	do_cmd(g, .New_Voyage, 0)
+	do_cmd(g, .Undock, 0)
+	do_cmd(g, .Open, int(Sub.Chart))
+	testing.expect_value(t, menu(g).items[0].arg, int(Sub.Book))
+	do_cmd(g, .Open, int(Sub.Book))
+	do_cmd(g, .Book_Step, -1)
+	testing.expect_value(t, g.book_good, Good.Pepper) // wraps round
+	do_cmd(g, .Book_Step, 1)
+	testing.expect_value(t, g.book_good, Good.Flour)
+	input(g, .Back)
+	testing.expect_value(t, g.sub, Sub.Chart)
+}
+
+@(test)
+the_price_book_round_trips :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	trading_post(g)
+	record_prices(g)
+	g.turn = 5
+	good: [SAVE_SIZE]u8
+	save_encode(g, &good)
+	h := new(Game)
+	defer free(h)
+	title(h, 3)
+	testing.expect_value(t, save_decode(h, good[:]), Load_Error.None)
+	testing.expect_value(t, h.seen[0].turn, 0)
+	for good in Good {
+		if good in h.trades[0] && good in g.trades[0] {testing.expect_value(t, h.seen[0].price[good], g.seen[0].price[good])}
+		if good not_in h.trades[0] {testing.expect_value(t, h.seen[0].price[good], 0)}
+	}
+
+	title(h, 3)
+	bad := good
+	put_u16(bad[SAVE_V5_SIZE:], 6) // seen after the saved turn
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = good
+	put_u16(bad[SAVE_V5_SIZE + 2:], PRICE_MAX + 1)
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	testing.expect(t, !h.has_voyage)
+
+	// A Phase 4 save starts the book with the docked island.
+	v5 := good
+	v5[3] = 5
+	testing.expect_value(t, save_decode(h, v5[:SAVE_V5_SIZE]), Load_Error.None)
+	testing.expect_value(t, h.seen[0].turn, 5)
+	testing.expect_value(t, h.seen[1].turn, NEVER_SEEN)
 }

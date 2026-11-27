@@ -21,8 +21,8 @@
   Keys: arrows or W/S, Enter, Esc, 1 to 9, M to mute.<br>
   <span class="ll-only" hidden><a href="#" id="feedback-link">Send feedback</a> · </span><a href="https://thegrumpygamedev.itch.io/">itch.io</a> · <a href="https://playdeezgames.github.io/oeuvre-of-splorr/">more games</a>
 </footer>
-<script type="text/javascript" src="odin.js?v=638f531-1795776253"></script>
-<script src="lootlocker.js?v=638f531-1795776253"></script>
+<script type="text/javascript" src="odin.js?v=51db78b-1795779252"></script>
+<script src="lootlocker.js?v=51db78b-1795779252"></script>
 <script>
   // Feedback through the shared SPLORR!! LootLocker kit (splorr/Tech/LootLocker.md in the vault). This game has no
   // LootLocker game yet: until domain and key are filled in and the console has Game feedback categories, the
@@ -60,12 +60,12 @@
   fit();
 
   const tiles = new Image();
-  tiles.src = "natural.png?v=638f531-1795776253"; // Bountiful Bits Natural, coloured, no background: 10 by 10 tiles, no gaps
+  tiles.src = "natural.png?v=51db78b-1795779252"; // Bountiful Bits Natural, coloured, no background: 10 by 10 tiles, no gaps
 
   // Bitmap font: m6x11, ASCII 32..126 in a 16x6 grid of 10x14 cells, 11 rows above the baseline.
   const FONT_W = 10, FONT_H = 14, FONT_BASE = 11;
   const font = new Image();
-  font.src = "font.png?v=638f531-1795776253";
+  font.src = "font.png?v=51db78b-1795779252";
   const fontAdvance = [];
   const fontTinted = new Map();
   font.onload = () => {
@@ -112,6 +112,25 @@
                     px, top, FONT_W * scale, FONT_H * scale);
       px += fontAdvance[i] * scale;
     }
+  };
+
+  // Greedy word wrap at the font's real advances. Returns the baseline after the last line.
+  const LINE_H = 14;
+  const textWidth = (str) => {
+    let w = 0;
+    for (const ch of str) { const i = ch.charCodeAt(0) - 32; w += fontAdvance[i >= 0 && i < 95 ? i : 0] || 0; }
+    return w;
+  };
+  const drawWrapped = (x, y, w, str, rgb) => {
+    if (!fontAdvance.length) return y;
+    let line = "";
+    for (const word of str.split(" ")) {
+      const next = line ? line + " " + word : word;
+      if (line && textWidth(next) > w) { drawBitmapText(x, y, line, rgb, 1, false); y += LINE_H; line = word; }
+      else line = next;
+    }
+    if (line) { drawBitmapText(x, y, line, rgb, 1, false); y += LINE_H; }
+    return y;
   };
 
   // The ship, drawn rather than taken from a sheet so it can turn to any heading. Points up (north) at heading 0.
@@ -232,8 +251,8 @@
   };
   requestAnimationFrame(pollPad);
 
-  // 638f531-1795776253 is stamped by tools/build.sh so a new build is never mixed with cached old files.
-  odin.runWasm("game.wasm?v=638f531-1795776253", null, {
+  // 51db78b-1795779252 is stamped by tools/build.sh so a new build is never mixed with cached old files.
+  odin.runWasm("game.wasm?v=51db78b-1795779252", null, {
     canvas: {
       fill_rect: (x, y, w, h, rgb, alpha) => {
         ctx.globalAlpha = alpha; ctx.fillStyle = css(rgb); ctx.fillRect(x, y, w, h); ctx.globalAlpha = 1;
@@ -245,6 +264,7 @@
       draw_text: (x, y, ptr, len, rgb, scale, centered) => {
         drawBitmapText(x, y, memory.loadString(ptr, len), rgb, scale, centered);
       },
+      draw_text_wrapped: (x, y, w, ptr, len, rgb) => drawWrapped(x, y, w, memory.loadString(ptr, len), rgb),
       play_sound: (id) => playSound(id),
       store_save: (ptr, len) => store.set(SAVE_KEY, toHex(memory.loadBytes(ptr, len))),
       toggle_mute: () => flipMute(),

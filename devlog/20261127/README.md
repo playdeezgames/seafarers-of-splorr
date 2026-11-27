@@ -63,3 +63,28 @@ Not posted. A working record.
 - About a third of island-pair routes for a traded good are profitable; the best margins run to 260 to 300%.
 - Save version 4 (1,042 bytes: cargo and every island's current market). Version 2 and 3 saves load with the
   starting purse, an empty hold and markets at their usual levels. 32 native tests.
+
+## Phase 4, islands, districts, deliveries (same day)
+
+- Every island has docks and a market; from the seed, 70% have a delivery service, 60% a street vendor and 40% a dark
+  alley (it opens in Phase 5). The docked menu lists the districts the island has.
+- The user's answers: carry **up to three deliveries**; each has a **deadline of twice the distance** in turns (the
+  C++ rule) and pays **half when late**; the street vendor sells **cheap rations**.
+- The delivery service offers up to three jobs, fresh on each docking, as a letter in Classic's words ("Please
+  promptly deliver this battered bundle to Imala the honest priest on Emopup."), with the sender, distance, pay and due
+  turn. Pay is 10 plus one to three times the leagues. Accepting a job charts its destination; destinations show gold
+  on the chart and starred in Head for. Deliveries pay on docking at the destination; abandoning one is free for now
+  (reputation comes later).
+- The street vendor sells lots of five rations at about 0.6 grain (the market's lot of ten costs two grain), ten lots
+  a visit.
+- Save version 5 (1,119 bytes: offers, deliveries carried, the vendor's stock, deliveries made). 41 native tests.
+
+## The price book (the user's request, same day)
+
+- "I should be able to compare last viewed prices for an island at which I docked. It should also show how old the
+  price is." Every island's asking prices are recorded when you dock there and after every trade, with the turn.
+- With a good open in a market, a table over the sea view lists every island you have docked at that trades it,
+  dearest first: what it asked (Buy), what it would pay (Sell) and how many turns ago you saw it; the island you are
+  at is in gold. At sea, Chart → Price book shows the same table and steps through the goods.
+- Save version 6 (2,159 bytes: the book). Older saves start the book with the island you are docked at. 45 native
+  tests.

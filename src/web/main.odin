@@ -18,6 +18,8 @@ foreign canvas {
 	draw_ship :: proc(x, y, heading: f32) ---
 	// Bitmap text (m6x11). y is the baseline; scale is a whole number; x is the centre when centered.
 	draw_text :: proc(x, y: f32, text: string, rgb: u32, scale: i32, centered: bool) ---
+	// The same, word-wrapped to width w; returns the baseline after the last line.
+	draw_text_wrapped :: proc(x, y, w: f32, text: string, rgb: u32) -> f32 ---
 	play_sound :: proc(sound: i32) ---
 	// Writes the save bytes to localStorage.
 	store_save :: proc(data: []u8) ---
@@ -39,6 +41,10 @@ DEEP :: 0x0e1a2e
 PANEL :: 0x141c2a
 EDGE :: 0x3a4a62
 HILITE :: 0x2a3a58
+PAPER :: 0xe8dcb8
+INK :: 0x3a2a18
+INK_DIM :: 0x7a6a50
+LATE :: 0xa02a1a
 RED :: 0xe0533a
 LAND :: 0xb4532a
 
@@ -151,9 +157,17 @@ step :: proc(dt: f64, c: runtime.Context) -> bool {
 draw :: proc(g: ^game.Game) {
 	if g.screen == .Sea && g.sub == .Chart {
 		draw_chart(g)
+	} else if g.screen == .Sea && g.sub == .Book {
+		fill_rect(0, 0, game.PANEL_X, game.LOGICAL_H, DEEP, 1)
+		draw_book(g, g.book_good, 16)
 	} else {
 		draw_sea(g)
 		if g.screen == .Sea || g.screen == .Docked {draw_hud(g)}
+		if g.screen == .Docked && (g.sub == .Offer || g.sub == .Carried_Detail) {draw_letter(g)}
+		if g.screen == .Docked && g.sub == .Trade && g.trade_good != game.RATIONS {
+			fill_rect(0, 48, game.PANEL_X, game.LOGICAL_H - 48, DEEP, 0.88)
+			draw_book(g, game.Good(g.trade_good), 64)
+		}
 	}
 	draw_panel(g)
 }
@@ -218,7 +232,7 @@ draw_chart :: proc(g: ^game.Game) {
 	for ty in 0 ..< game.WORLD_SIZE {
 		for tx in 0 ..< game.WORLD_SIZE {
 			if i := game.land_at(g, tx, ty); i != game.NO_ISLAND && g.islands[i].charted {
-				fill_rect(f32(tx) * S, f32(ty) * S, S, S, LAND, 1)
+				fill_rect(f32(tx) * S, f32(ty) * S, S, S, game.is_destination(g, i) ? GOLD : LAND, 1)
 			}
 		}
 	}
@@ -229,6 +243,68 @@ draw_chart :: proc(g: ^game.Game) {
 	fill_rect(sx - r, sy - r, 1, 2 * r, WHITE, 0.25)
 	fill_rect(sx + r, sy - r, 1, 2 * r, WHITE, 0.25)
 	fill_rect(math.round(sx) - 1, math.round(sy) - 1, 3, 3, WHITE, 1)
+}
+
+// The price book for one good: every island you have docked at that trades it, dearest first, with what it asked
+// (Buy), what it would pay (Sell) and how long ago you saw it.
+draw_book :: proc(g: ^game.Game, good: game.Good, y0: f32) {
+	buf: [48]u8
+	draw_text(8, y0, fmt.bprintf(buf[:], "%s: prices seen", game.GOODS[good].name), GOLD, 1, false)
+	y := y0 + f32(game.LINE) + 2
+	draw_text(8, y, "Island", DIM, 1, false)
+	draw_text(104, y, "Buy", DIM, 1, false)
+	draw_text(140, y, "Sell", DIM, 1, false)
+	draw_text(180, y, "Seen", DIM, 1, false)
+	fill_rect(6, y + 3, game.PANEL_X - 12, 1, EDGE, 1)
+	rows: [game.ISLAND_MAX]int
+	n := game.book_rows(g, good, rows[:])
+	if n == 0 {
+		draw_text(8, y + f32(game.LINE) + 2, "None seen yet: dock", WHITE, 1, false)
+		draw_text(8, y + 2 * f32(game.LINE) + 2, "where it is traded.", WHITE, 1, false)
+		return
+	}
+	for k in 0 ..< n {
+		y += f32(game.LINE)
+		if y > game.LOGICAL_H - 4 {break}
+		i := rows[k]
+		seen := g.seen[i]
+		here := i == g.docked
+		colour: u32 = here ? GOLD : WHITE
+		draw_text(8, y, game.island_name(g, i), colour, 1, false)
+		draw_text(104, y, fmt.bprintf(buf[:], "%d", seen.price[good]), colour, 1, false)
+		draw_text(140, y, fmt.bprintf(buf[:], "%d", game.paid_for(seen.price[good])), colour, 1, false)
+		age := g.turn - seen.turn
+		draw_text(180, y, age == 0 ? "now" : fmt.bprintf(buf[:], "%d ago", age), age > 200 ? FAINT : DIM, 1, false)
+	}
+}
+
+// A delivery shown as a letter over the sea view.
+draw_letter :: proc(g: ^game.Game) {
+	d: game.Delivery
+	if g.sub == .Offer {
+		if g.pick >= g.n_offers {return}
+		d = g.offers[g.pick]
+	} else {
+		if g.pick >= g.n_carried {return}
+		d = g.carried[g.pick]
+	}
+	X, Y, W, H :: 16, 62, 208, 104
+	fill_rect(X + 3, Y + 3, W, H, 0x000000, 0.4)
+	fill_rect(X, Y, W, H, PAPER, 1)
+	fill_rect(X, Y, W, 1, INK_DIM, 1)
+	fill_rect(X, Y + H - 1, W, 1, INK_DIM, 1)
+	buf: [200]u8
+	y := draw_text_wrapped(X + 8, Y + 16, W - 16, game.delivery_text(g, d, buf[:]), INK)
+	lb: [64]u8
+	y += 6
+	draw_text(X + 8, y, fmt.bprintf(lb[:], "From %s, %d leagues.", game.island_name(g, d.from), game.leagues_between(g, d.from, d.to)), INK_DIM, 1, false)
+	y += f32(game.LINE)
+	left := d.due - g.turn
+	if left >= 0 {
+		draw_text(X + 8, y, fmt.bprintf(lb[:], "Pays %d by turn %d (%d left).", d.reward, d.due, left), INK, 1, false)
+	} else {
+		draw_text(X + 8, y, fmt.bprintf(lb[:], "Late! Now pays %d.", game.pay_for(g, d)), LATE, 1, false)
+	}
 }
 
 // Ship's condition along the top of the sea view.
@@ -280,6 +356,17 @@ draw_panel :: proc(g: ^game.Game) {
 			if g.has_best {draw_text(tx, 42, fmt.bprintf(buf[:], "Best %d", g.best), DIM, 1, false)}
 		}
 	case .Docked:
+		#partial switch g.sub {
+		case .Deliveries, .Offer, .Carried, .Carried_Detail:
+			draw_text(tx, 14, "Delivery service", GOLD, 1, false)
+			draw_text(tx, 28, fmt.bprintf(buf[:], "Carrying %d of %d", g.n_carried, game.CARRY_MAX), WHITE, 1, false)
+			draw_text(tx, 42, fmt.bprintf(buf[:], "Delivered %d so far", g.deliveries_made), DIM, 1, false)
+		case .Vendor:
+			draw_text(tx, 14, "Street vendor", GOLD, 1, false)
+			draw_text(tx, 28, fmt.bprintf(buf[:], "Money %d", g.money), WHITE, 1, false)
+			draw_text(tx, 42, fmt.bprintf(buf[:], "%d lots left today", g.vendor_stock), DIM, 1, false)
+		}
+		if g.sub == .Deliveries || g.sub == .Offer || g.sub == .Carried || g.sub == .Carried_Detail || g.sub == .Vendor {break}
 		if g.sub == .Market || g.sub == .Trade {
 			draw_text(tx, 14, fmt.bprintf(buf[:], "Money %d", g.money), GOLD, 1, false)
 			draw_text(tx, 28, fmt.bprintf(buf[:], "Hold %d of %d tons", game.hold_used(g), game.HOLD_TONS), WHITE, 1, false)
@@ -298,7 +385,10 @@ draw_panel :: proc(g: ^game.Game) {
 		if g.docked != game.NO_ISLAND {draw_text(tx, 42, game.island_name(g, g.docked), GOLD, 1, false)}
 	case .Sea:
 		draw_text(tx, 14, fmt.bprintf(buf[:], "Turn %d of %d", g.turn, game.TURN_LIMIT), WHITE, 1, false)
-		if g.sub == .Chart {
+		if g.sub == .Book {
+			draw_text(tx, 28, "The price book", GOLD, 1, false)
+			draw_text(tx, 42, "Turns since seen", DIM, 1, false)
+		} else if g.sub == .Chart {
 			n := 0
 			for i in 0 ..< g.n_islands {if g.islands[i].charted {n += 1}}
 			draw_text(tx, 28, "The chart", GOLD, 1, false)
