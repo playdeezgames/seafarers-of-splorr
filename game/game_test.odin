@@ -1060,8 +1060,10 @@ the_price_book_round_trips :: proc(t: ^testing.T) {
 
 	title(h, 3)
 	bad := good
-	put_u16(bad[SAVE_V5_SIZE:], 6) // seen after the saved turn
-	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	put_u16(bad[SAVE_V5_SIZE:], 600) // seen after the saved turn (an older build's slip): read as seen now
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.None)
+	testing.expect_value(t, h.seen[0].turn, 5)
+	title(h, 3)
 	bad = good
 	put_u16(bad[SAVE_V5_SIZE + 2:], PRICE_MAX + 1)
 	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
@@ -1663,4 +1665,29 @@ the_course_round_trips :: proc(t: ^testing.T) {
 	buf[SAVE_V7_SIZE] = u8(h.n_islands)
 	title(h, 3)
 	testing.expect_value(t, save_decode(h, buf[:]), Load_Error.Range)
+}
+
+// A second voyage in one sitting starts its clock at 0 before anything is stamped with it (the user saw negative ages
+// in the price book, November 27, 2026).
+@(test)
+a_second_voyage_starts_at_turn_zero :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	title(g, 5)
+	voyage(g)
+	g.turn = 300
+	do_cmd(g, .To_Title, 0)
+	do_cmd(g, .New_Voyage, 0)
+	do_cmd(g, .Begin, QUICK)
+	testing.expect_value(t, g.turn, 0)
+	testing.expect_value(t, g.seen[0].turn, 0)
+	for k in 0 ..< g.n_offers {
+		testing.expect_value(t, g.offers[k].due, DEADLINE_FACTOR * leagues_between(g, 0, g.offers[k].to))
+	}
+	buf: [SAVE_SIZE]u8
+	save_encode(g, &buf)
+	h := new(Game)
+	defer free(h)
+	title(h, 3)
+	testing.expect_value(t, save_decode(h, buf[:]), Load_Error.None)
 }

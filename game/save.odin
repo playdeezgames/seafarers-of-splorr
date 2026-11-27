@@ -215,8 +215,10 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 			if turn == NOT_SEEN {
 				t.seen[i] = {turn = NEVER_SEEN}
 			} else {
-				if i >= t.n_islands || turn > int(turn_saved) {return .Range}
-				t.seen[i].turn = turn
+				if i >= t.n_islands {return .Range}
+				// Builds before the fix on November 27, 2026 stamped the home port of a second voyage in one sitting
+				// with the previous voyage's turn; read a seen turn from the future as seen now.
+				t.seen[i].turn = min(turn, int(turn_saved))
 			}
 			for good in Good {
 				p := int(get_u16(data[at + 2 + 2 * int(good):]))

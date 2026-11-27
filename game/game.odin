@@ -218,6 +218,7 @@ title :: proc(g: ^Game, seed: u64) {
 // Builds the world for seed and puts the ship at its home port, the first island, docked.
 start_world :: proc(g: ^Game, seed: u64) {
 	g.seed = seed
+	g.turn = 0 // before the home port's prices and offers are stamped with it
 	g.rng = rng_make(seed)
 	generate_world(g)
 	g.ship = {x = WORLD_SIZE / 2, y = WORLD_SIZE / 2, heading = 0, speed = 100}

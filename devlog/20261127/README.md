@@ -133,3 +133,12 @@ Not posted. A working record.
 - On a course a new sighting is logged and sounded but no longer stops the ship (the user's choice). Setting the
   heading or the speed yourself drops the course; Head for at all stop sets full sail. The panel shows "For <island>".
 - Save version 8 (one byte more: the course). Older saves load with none. 66 native tests.
+
+## Fix: negative ages in the price book (the user's report, same day)
+
+- The user saw some Seen ages in the market's price table go negative. A second voyage in one sitting built its world
+  (recording the home port's prices and making its first delivery offers) before the turn count went back to 0, so
+  those were stamped with the previous voyage's turn: the prices looked seen in the future and the first offers had
+  deadlines far too long. Such a save would also have been refused on loading.
+- The world now starts its clock at 0 before anything is stamped, and a save with a price seen "in the future" loads
+  with it read as seen at the saved turn. 67 native tests.
