@@ -797,7 +797,7 @@ docked_menu_shows_the_districts :: proc(t: ^testing.T) {
 	defer free(g)
 	busy_port(g)
 	m := menu(g)
-	testing.expect_value(t, m.n, 7) // cast off, market, deliveries, vendor, careen, sound, title
+	testing.expect_value(t, m.n, 8) // cast off, market, deliveries, vendor, alley, careen, sound, title
 	testing.expect_value(t, m.items[2].arg, int(Sub.Deliveries))
 	testing.expect_value(t, m.items[3].arg, int(Sub.Vendor))
 	g.districts[0] = {}
@@ -1067,4 +1067,146 @@ the_price_book_round_trips :: proc(t: ^testing.T) {
 	testing.expect_value(t, save_decode(h, v5[:SAVE_V5_SIZE]), Load_Error.None)
 	testing.expect_value(t, h.seen[0].turn, 5)
 	testing.expect_value(t, h.seen[1].turn, NEVER_SEEN)
+}
+
+@(test)
+tarot_values_and_the_in_between_rule :: proc(t: ^testing.T) {
+	testing.expect_value(t, card_value(0), 1) // Ace of Wands
+	testing.expect_value(t, card_value(13), 14) // King of Wands
+	testing.expect_value(t, card_value(14), 1) // Ace of Cups: suits are equal
+	testing.expect_value(t, card_value(MINORS), 15) // The Fool beats every suit card
+	testing.expect_value(t, card_value(DECK_SIZE - 1), 36) // The World
+	two_of_wands, ten_of_cups, five_of_swords := 1, 14 + 9, 28 + 4
+	testing.expect(t, in_between(two_of_wands, ten_of_cups, five_of_swords))
+	testing.expect(t, in_between(ten_of_cups, two_of_wands, five_of_swords)) // either order
+	testing.expect(t, !in_between(two_of_wands, ten_of_cups, 14 + 1)) // a tie with the two loses
+	testing.expect(t, !in_between(two_of_wands, ten_of_cups, MINORS)) // a trump is above both
+	testing.expect(t, is_pair(4, 14 + 4)) // fives of two suits
+	testing.expect(t, !in_between(4, 14 + 4, 28 + 4))
+	buf: [40]u8
+	testing.expect_value(t, card_name(13 + 14 * 3, buf[:]), "King of Pentacles")
+	testing.expect_value(t, card_name(MINORS + 13, buf[:]), "Death")
+}
+
+// Docked at a home port with a dark alley at stake 10.
+alley :: proc(g: ^Game) {
+	title(g, 41)
+	do_cmd(g, .New_Voyage, 0)
+	g.districts[0] = {.Dark_Alley}
+	g.stakes[0] = 10
+	do_cmd(g, .Open, int(Sub.Alley))
+}
+
+@(test)
+the_ante_and_a_bet :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	alley(g)
+	testing.expect_value(t, menu(g).items[0].cmd, Cmd.Deal)
+	do_cmd(g, .Deal, 0)
+	testing.expect_value(t, g.money, START_MONEY - 10)
+	testing.expect_value(t, g.hand_state, Hand_State.Dealt)
+	testing.expect(t, g.hand[0] != g.hand[1] && g.hand[1] != g.hand[2] && g.hand[0] != g.hand[2])
+	testing.expect_value(t, menu(g).n, len(BET_STEPS) + 1) // four bets and a fold
+	// Rig the hand: a win, then a loss.
+	g.hand = {1, 14 + 9, 28 + 4}
+	do_cmd(g, .Bet, 5)
+	testing.expect_value(t, g.hand_state, Hand_State.Shown)
+	testing.expect(t, g.hand_won)
+	testing.expect_value(t, g.money, START_MONEY - 10 + 50)
+	do_cmd(g, .Deal, 0)
+	g.hand = {1, 14 + 9, 14 + 1} // the third ties the two: Classic's rule, a loss
+	money := g.money
+	do_cmd(g, .Bet, 2)
+	testing.expect(t, !g.hand_won)
+	testing.expect_value(t, g.money, money - 20)
+}
+
+@(test)
+folding_loses_only_the_ante :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	alley(g)
+	do_cmd(g, .Deal, 0)
+	do_cmd(g, .Fold, 0)
+	testing.expect_value(t, g.hand_state, Hand_State.None)
+	testing.expect_value(t, g.money, START_MONEY - 10)
+	// Leaving the table mid-hand folds it too.
+	do_cmd(g, .Deal, 0)
+	input(g, .Back)
+	testing.expect_value(t, g.sub, Sub.None)
+	testing.expect_value(t, g.hand_state, Hand_State.None)
+	testing.expect_value(t, g.money, START_MONEY - 20)
+}
+
+@(test)
+the_alley_needs_money :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	alley(g)
+	g.money = 9
+	do_cmd(g, .Deal, 0)
+	testing.expect_value(t, g.hand_state, Hand_State.None)
+	testing.expect_value(t, g.money, 9)
+	g.money = 30
+	do_cmd(g, .Deal, 0) // 20 left: bets of 10 and 20 only
+	testing.expect(t, !place_bet(g, 5))
+	testing.expect(t, !place_bet(g, 0))
+	testing.expect(t, place_bet(g, 2))
+}
+
+@(test)
+stakes_come_from_the_seed :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	title(g, 12)
+	for i in 0 ..< g.n_islands {
+		testing.expect(t, g.stakes[i] >= 5 && g.stakes[i] <= 25 && g.stakes[i] % 5 == 0)
+	}
+}
+
+@(test)
+head_for_pages_when_many_are_charted :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	title(g, 13)
+	do_cmd(g, .New_Voyage, 0)
+	do_cmd(g, .Undock, 0)
+	for i in 0 ..< g.n_islands {g.islands[i].charted = true}
+	n := g.n_islands
+	pages := (n + HEAD_FOR_PAGE - 1) / HEAD_FOR_PAGE
+	do_cmd(g, .Open, int(Sub.Head_For))
+	seen: [ISLAND_MAX]bool
+	for p in 0 ..< pages {
+		m := menu(g)
+		testing.expect(t, m.n <= MENU_MAX)
+		testing.expect_value(t, m.items[m.n - 1].cmd, Cmd.Back)
+		testing.expect_value(t, m.items[m.n - 2].cmd, Cmd.Next_Page)
+		for k in 0 ..< m.n - 2 {
+			testing.expect_value(t, m.items[k].cmd, Cmd.Head_For)
+			testing.expect(t, !seen[m.items[k].arg])
+			seen[m.items[k].arg] = true
+		}
+		choose(g, m.n - 2) // More
+		testing.expect_value(t, g.sub, Sub.Head_For)
+		_ = p
+	}
+	for i in 0 ..< n {testing.expect(t, seen[i])} // every island is reachable on some page
+	testing.expect_value(t, menu(g).items[0].arg, charted_nearest(g)) // and it wraps to the first page
+	// Choosing one far down the list steers for it.
+	do_cmd(g, .Next_Page, 0)
+	m := menu(g)
+	target := m.items[0].arg
+	choose(g, 0)
+	testing.expect_value(t, g.ship.heading, bearing_to(g, target))
+	// A few charted islands still fit without paging.
+	for i in 3 ..< n {g.islands[i].charted = false}
+	do_cmd(g, .Open, int(Sub.Head_For))
+	testing.expect_value(t, menu(g).items[menu(g).n - 2].cmd, Cmd.Head_For)
+}
+
+charted_nearest :: proc(g: ^Game) -> int {
+	out: [1]int
+	charted_by_distance(g, out[:])
+	return out[0]
 }

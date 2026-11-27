@@ -88,3 +88,17 @@ Not posted. A working record.
   at is in gold. At sea, Chart → Price book shows the same table and steps through the goods.
 - Save version 6 (2,159 bytes: the book). Older saves start the book with the island you are docked at. 45 native
   tests.
+
+## Phase 5, the dark alley; Head for paging (same day)
+
+- Classic's in-between game with a 78-card tarot deck: trumps beat every suit card and rank by number, suit cards
+  rank Ace to King with suits equal. Two cards up; a win (the third strictly between) pays even money.
+- The user kept Classic's tie rule (a pair up, or a third card equal to either, loses) and asked that it be shown: the
+  table spells out the rule and flags a pair before you bet.
+- Classic's free fold made the alley a money farm (betting only wide spreads gains about 7.5% of the stake per hand
+  dealt). The user chose an ante: dealing costs the island's minimum stake (5 to 25, from the seed), lost if you fold;
+  bets are 1, 2, 5 or 10 times the minimum. Leaving the table mid-hand folds it, so no hand is ever saved.
+- Sound pass: a riffle on the deal, a rising chord on a win, a drop on a loss, and a ship's bell when a sail finishes.
+- **Head for paging** (the user's report: with more charted islands than the menu holds, the far ones could not be
+  chosen): when they do not fit, seven a page, nearest first, with "More (page n of m)".
+- 51 native tests. No save change (the hand is never saved; stakes come from the seed).

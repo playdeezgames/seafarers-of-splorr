@@ -41,6 +41,11 @@ DEEP :: 0x0e1a2e
 PANEL :: 0x141c2a
 EDGE :: 0x3a4a62
 HILITE :: 0x2a3a58
+FELT :: 0x0e3a24
+CARD_BACK :: 0x6a1a2a
+CARD_BACK_INNER :: 0x8a2a3a
+TRUMP_INK :: 0x6a2a8a
+LATE_LIGHT :: 0xff7a5a
 PAPER :: 0xe8dcb8
 INK :: 0x3a2a18
 INK_DIM :: 0x7a6a50
@@ -157,6 +162,8 @@ step :: proc(dt: f64, c: runtime.Context) -> bool {
 draw :: proc(g: ^game.Game) {
 	if g.screen == .Sea && g.sub == .Chart {
 		draw_chart(g)
+	} else if g.screen == .Docked && g.sub == .Alley {
+		draw_alley(g)
 	} else if g.screen == .Sea && g.sub == .Book {
 		fill_rect(0, 0, game.PANEL_X, game.LOGICAL_H, DEEP, 1)
 		draw_book(g, g.book_good, 16)
@@ -278,6 +285,67 @@ draw_book :: proc(g: ^game.Game, good: game.Good, y0: f32) {
 	}
 }
 
+// The dark alley's table: the two cards up, the third once the bet is in, and the rule.
+draw_alley :: proc(g: ^game.Game) {
+	fill_rect(0, 0, game.PANEL_X, game.LOGICAL_H, FELT, 1)
+	draw_text(game.PANEL_X / 2, 18, "THE DARK ALLEY", GOLD, 1, true)
+	CW :: 66
+	xs := [3]f32{10, 87, 164}
+	for k in 0 ..< 3 {
+		up := g.hand_state == .Shown || (g.hand_state == .Dealt && k < 2)
+		draw_card(g.hand[k], xs[k], 30, up)
+	}
+	buf: [48]u8
+	y := f32(140)
+	switch g.hand_state {
+	case .None:
+		draw_text(game.PANEL_X / 2, y, fmt.bprintf(buf[:], "Ante %d to deal.", g.stakes[g.docked]), WHITE, 1, true)
+	case .Dealt:
+		if game.is_pair(g.hand[0], g.hand[1]) {
+			draw_text(game.PANEL_X / 2, y, "A pair: any bet loses.", LATE_LIGHT, 1, true)
+		} else {
+			draw_text(game.PANEL_X / 2, y, "Bet, or fold and lose the ante.", WHITE, 1, true)
+		}
+	case .Shown:
+		if g.hand_won {
+			draw_text(game.PANEL_X / 2, y, fmt.bprintf(buf[:], "Between! You win %d.", g.bet), GOLD, 1, true)
+		} else {
+			draw_text(game.PANEL_X / 2, y, fmt.bprintf(buf[:], "Not between. You lose %d.", g.bet), LATE_LIGHT, 1, true)
+		}
+	}
+	draw_text(8, 186, "Win if the third card falls", DIM, 1, false)
+	draw_text(8, 200, "strictly between. Ties lose.", DIM, 1, false)
+	draw_text(8, 214, "Trumps beat suits; suits are", DIM, 1, false)
+	draw_text(8, 228, "equal. A win pays even money.", DIM, 1, false)
+}
+
+draw_card :: proc(card: int, x, y: f32, up: bool) {
+	W, H :: 66, 96
+	fill_rect(x + 2, y + 2, W, H, 0x000000, 0.4)
+	if !up {
+		fill_rect(x, y, W, H, CARD_BACK, 1)
+		fill_rect(x + 4, y + 4, W - 8, H - 8, CARD_BACK_INNER, 1)
+		for k in 0 ..< 5 {fill_rect(x + 12 + f32(k) * 9, y + 44, 5, 5, CARD_BACK, 1)}
+		return
+	}
+	fill_rect(x, y, W, H, PAPER, 1)
+	fill_rect(x + 2, y + 2, W - 4, 1, INK_DIM, 1)
+	fill_rect(x + 2, y + H - 3, W - 4, 1, INK_DIM, 1)
+	if game.is_trump(card) {
+		t := card - game.MINORS
+		draw_text(x + 5, y + 15, game.NUMERALS[t], TRUMP_INK, 1, false)
+		draw_text_wrapped(x + 5, y + 44, W - 8, game.TRUMPS[t], TRUMP_INK)
+		draw_text(x + W / 2, y + H - 8, "TRUMP", TRUMP_INK, 1, true)
+		return
+	}
+	SUIT_INK := [4]u32{0x2e7a2e, 0x2a5aa8, 0x505a6a, 0xa07a10}
+	ink := SUIT_INK[game.card_suit(card)]
+	draw_text(x + 5, y + 15, game.SHORT_RANKS[card % 14], ink, 1, false)
+	draw_text(x + W / 2, y + 46, game.RANKS[card % 14], ink, 1, true)
+	draw_text(x + W / 2, y + 60, "of", INK_DIM, 1, true)
+	draw_text(x + W / 2, y + 74, game.SUITS[game.card_suit(card)], ink, 1, true)
+}
+
 // A delivery shown as a letter over the sea view.
 draw_letter :: proc(g: ^game.Game) {
 	d: game.Delivery
@@ -361,12 +429,16 @@ draw_panel :: proc(g: ^game.Game) {
 			draw_text(tx, 14, "Delivery service", GOLD, 1, false)
 			draw_text(tx, 28, fmt.bprintf(buf[:], "Carrying %d of %d", g.n_carried, game.CARRY_MAX), WHITE, 1, false)
 			draw_text(tx, 42, fmt.bprintf(buf[:], "Delivered %d so far", g.deliveries_made), DIM, 1, false)
+		case .Alley:
+			draw_text(tx, 14, "Dark alley", GOLD, 1, false)
+			draw_text(tx, 28, fmt.bprintf(buf[:], "Stakes %d", g.stakes[g.docked]), WHITE, 1, false)
+			draw_text(tx, 42, fmt.bprintf(buf[:], "Money %d", g.money), DIM, 1, false)
 		case .Vendor:
 			draw_text(tx, 14, "Street vendor", GOLD, 1, false)
 			draw_text(tx, 28, fmt.bprintf(buf[:], "Money %d", g.money), WHITE, 1, false)
 			draw_text(tx, 42, fmt.bprintf(buf[:], "%d lots left today", g.vendor_stock), DIM, 1, false)
 		}
-		if g.sub == .Deliveries || g.sub == .Offer || g.sub == .Carried || g.sub == .Carried_Detail || g.sub == .Vendor {break}
+		if g.sub == .Deliveries || g.sub == .Offer || g.sub == .Carried || g.sub == .Carried_Detail || g.sub == .Vendor || g.sub == .Alley {break}
 		if g.sub == .Market || g.sub == .Trade {
 			draw_text(tx, 14, fmt.bprintf(buf[:], "Money %d", g.money), GOLD, 1, false)
 			draw_text(tx, 28, fmt.bprintf(buf[:], "Hold %d of %d tons", game.hold_used(g), game.HOLD_TONS), WHITE, 1, false)

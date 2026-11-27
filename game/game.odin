@@ -43,6 +43,7 @@ Sub :: enum u8 {
 	Carried_Detail, // one carried delivery (g.pick)
 	Vendor, // the street vendor
 	Book, // the price book for g.book_good, opened from the chart
+	Alley, // the dark alley's card table
 }
 
 // Keyboard and gamepad commands; order matches ACTION in web/index.html.
@@ -63,6 +64,10 @@ Sound :: enum u8 {
 	Retire,
 	Lose,
 	Coins,
+	Deal,
+	Win,
+	Bust,
+	Bell,
 }
 
 Cmd :: enum u8 {
@@ -89,7 +94,13 @@ Cmd :: enum u8 {
 	Abandon,
 	Vendor_Buy, // arg: lots
 	Book_Step, // arg: +1 or -1 through the goods
+	Deal,
+	Bet, // arg: times the minimum stake
+	Fold,
+	Next_Page, // Head for: the next page of islands
 }
+
+HEAD_FOR_PAGE :: MENU_MAX - 2 // islands a page when they do not all fit: leaves room for More and Back
 
 RATIONS :: -1 // Pick_Good's arg for the rations stall
 ALL :: 1_000_000 // Buy and Sell's arg for "as many as possible"
@@ -151,6 +162,12 @@ Game :: struct {
 	pick:       int, // the offer or carried delivery open in a submenu
 	seen:       [ISLAND_MAX]Seen, // the price book
 	book_good:  Good,
+	stakes:     [ISLAND_MAX]int, // the dark alley's minimum stake, from the seed
+	hand:       [3]int,
+	hand_state: Hand_State,
+	hand_won:   bool,
+	bet:        int,
+	page:       int, // Head for page
 	muted:      bool, // mirrors the page's mute setting, for the menu label
 	// Requests to the web layer, cleared by it.
 	want_save:  bool,
@@ -183,6 +200,8 @@ start_world :: proc(g: ^Game, seed: u64) {
 	g.cargo = {}
 	generate_markets(g)
 	generate_districts(g)
+	generate_stakes(g)
+	g.hand_state = .None
 	for i in 0 ..< ISLAND_MAX {g.seen[i] = {turn = NEVER_SEEN}}
 	g.n_offers, g.n_carried, g.deliveries_made = 0, 0, 0
 	g.vendor_stock = VENDOR_STOCK
@@ -280,6 +299,16 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			add(g, &m, "Abandon it", .Abandon)
 			add(g, &m, "Back", .Back)
 			return
+		case .Alley:
+			stake := g.stakes[g.docked]
+			if g.hand_state == .Dealt {
+				for k in BET_STEPS {addf(g, &m, .Bet, k, "Bet %d", k * stake)}
+				add(g, &m, "Fold", .Fold)
+			} else {
+				addf(g, &m, .Deal, 0, g.hand_state == .Shown ? "Deal again (ante %d)" : "Deal (ante %d)", stake)
+				add(g, &m, "Back", .Back)
+			}
+			return
 		case .Vendor:
 			addf(g, &m, .Vendor_Buy, 1, "Buy %d rations at %d", VENDOR_LOT, vendor_price(g, g.docked))
 			addf(g, &m, .Vendor_Buy, 5, "Buy %d", 5 * VENDOR_LOT)
@@ -292,6 +321,7 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 		add(g, &m, "Market", .Open, int(Sub.Market))
 		if .Delivery_Service in ds {add(g, &m, "Delivery service", .Open, int(Sub.Deliveries))}
 		if .Street_Vendor in ds {add(g, &m, "Street vendor", .Open, int(Sub.Vendor))}
+		if .Dark_Alley in ds {add(g, &m, "Dark alley", .Open, int(Sub.Alley))}
 		add(g, &m, "Careen", .Open, int(Sub.Careen))
 		add(g, &m, sound_label, .Sound_Toggle)
 		add(g, &m, "Back to title", .To_Title)
@@ -327,13 +357,21 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			for t in ([5]int{1, 3, 5, 10, 25}) {addf(g, &m, .Sail, t, "%d turn%s", t, t == 1 ? "" : "s")}
 			add(g, &m, "Back", .Back)
 		case .Head_For:
-			near: [MENU_MAX - 1]int
+			near: [ISLAND_MAX]int
 			n := charted_by_distance(g, near[:])
-			for j in 0 ..< n {
+			first, last := 0, n // all of them when they fit with Back
+			pages := 1
+			if n > MENU_MAX - 1 {
+				pages = (n + HEAD_FOR_PAGE - 1) / HEAD_FOR_PAGE
+				first = (g.page % pages) * HEAD_FOR_PAGE
+				last = min(first + HEAD_FOR_PAGE, n)
+			}
+			for j in first ..< last {
 				i := near[j]
 				d := int(math.round(island_distance(g, i, g.ship.x, g.ship.y)))
 				addf(g, &m, .Head_For, i, "%s%s %d %s", is_destination(g, i) ? "*" : "", island_name(g, i), d, compass(bearing_to(g, i)))
 			}
+			if pages > 1 {addf(g, &m, .Next_Page, 0, "More (page %d of %d)", g.page % pages + 1, pages)}
 			add(g, &m, "Back", .Back)
 		case .Dock:
 			near: [MENU_MAX - 1]int
@@ -347,7 +385,7 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			add(g, &m, "Next good", .Book_Step, 1)
 			add(g, &m, "Previous good", .Book_Step, -1)
 			add(g, &m, "Back", .Back)
-		case .Careen, .Market, .Trade, .Deliveries, .Offer, .Carried, .Carried_Detail, .Vendor:
+		case .Careen, .Market, .Trade, .Deliveries, .Offer, .Carried, .Carried_Detail, .Vendor, .Alley:
 			add(g, &m, "Back", .Back)
 		}
 	}
@@ -408,6 +446,8 @@ click :: proc(g: ^Game, x, y: int) {
 }
 
 open :: proc(g: ^Game, s: Sub) {
+	if g.sub == .Alley && s != .Alley {fold(g)} // leaving the table folds the hand
+	if s == .Head_For && g.sub != .Head_For {g.page = 0}
 	g.sub = s
 	g.cursor = 0
 }
@@ -587,6 +627,36 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 			sound(g, .Deny)
 			logf(g, g.vendor_stock == 0 ? "Sold out today." : "Not enough money.")
 		}
+	case .Next_Page:
+		g.page += 1
+		g.cursor = 0
+	case .Deal:
+		if g.sub != .Alley || g.hand_state == .Dealt {return}
+		if !deal(g) {
+			sound(g, .Deny)
+			logf(g, "The ante is %d.", g.stakes[g.docked])
+			return
+		}
+		sound(g, .Deal)
+		g.cursor = 0
+		if is_pair(g.hand[0], g.hand[1]) {logf(g, "A pair: any bet loses.")}
+		g.want_save = true
+	case .Bet:
+		if g.sub != .Alley || g.hand_state != .Dealt {return}
+		if !place_bet(g, arg) {
+			sound(g, .Deny)
+			logf(g, "You can't cover that.")
+			return
+		}
+		sound(g, g.hand_won ? .Win : .Bust)
+		logf(g, g.hand_won ? "Between! Won %d." : "Not between: lost %d.", g.bet)
+		g.cursor = 0
+		g.want_save = true
+	case .Fold:
+		if g.hand_state != .Dealt {return}
+		fold(g)
+		logf(g, "Folded.")
+		g.cursor = 0
 	case .Book_Step:
 		g.book_good = Good((int(g.book_good) + len(Good) + (arg < 0 ? -1 : 1)) % len(Good))
 	case .Undock:
@@ -631,6 +701,7 @@ sail :: proc(g: ^Game, turns: int) {
 			} else {
 				logf(g, "Sailed %d turn%s %s.", turns, turns == 1 ? "" : "s", compass(g.ship.heading))
 			}
+			sound(g, .Bell)
 		}
 	}
 }

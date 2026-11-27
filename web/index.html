@@ -161,6 +161,10 @@
     { wave: "triangle", notes: [[523, 0.12], [659, 0.12], [784, 0.12], [1047, 0.3]] }, // Retire
     { wave: "square", notes: [[294, 0.15], [262, 0.15], [220, 0.15], [147, 0.4]] },    // Lose
     { wave: "square", notes: [[1319, 0.03], [1760, 0.06]] },  // Coins
+    { wave: "triangle", notes: [[180, 0.02], [0, 0.03], [200, 0.02], [0, 0.03], [220, 0.02]] }, // Deal (riffle)
+    { wave: "square", notes: [[659, 0.07], [880, 0.07], [1319, 0.14]] },  // Win
+    { wave: "square", notes: [[330, 0.1], [196, 0.18]] },                  // Bust
+    { wave: "sine", notes: [[1175, 0.6]] },                                // Bell
   ];
   let muted = store.get(MUTE_KEY) === "1";
   let audio = null;
@@ -175,6 +179,7 @@
     if (muted || !audio || !s) return;
     let t = audio.currentTime;
     for (const [f, d] of s.notes) {
+      if (!f) { t += d; continue; } // a rest
       const o = audio.createOscillator(), g = audio.createGain();
       o.type = s.wave; o.frequency.value = f;
       g.gain.setValueAtTime(0.06, t);

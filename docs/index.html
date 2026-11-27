@@ -21,8 +21,8 @@
   Keys: arrows or W/S, Enter, Esc, 1 to 9, M to mute.<br>
   <span class="ll-only" hidden><a href="#" id="feedback-link">Send feedback</a> · </span><a href="https://thegrumpygamedev.itch.io/">itch.io</a> · <a href="https://playdeezgames.github.io/oeuvre-of-splorr/">more games</a>
 </footer>
-<script type="text/javascript" src="odin.js?v=51db78b-1795779252"></script>
-<script src="lootlocker.js?v=51db78b-1795779252"></script>
+<script type="text/javascript" src="odin.js?v=0dab4f0-1795787531"></script>
+<script src="lootlocker.js?v=0dab4f0-1795787531"></script>
 <script>
   // Feedback through the shared SPLORR!! LootLocker kit (splorr/Tech/LootLocker.md in the vault). This game has no
   // LootLocker game yet: until domain and key are filled in and the console has Game feedback categories, the
@@ -60,12 +60,12 @@
   fit();
 
   const tiles = new Image();
-  tiles.src = "natural.png?v=51db78b-1795779252"; // Bountiful Bits Natural, coloured, no background: 10 by 10 tiles, no gaps
+  tiles.src = "natural.png?v=0dab4f0-1795787531"; // Bountiful Bits Natural, coloured, no background: 10 by 10 tiles, no gaps
 
   // Bitmap font: m6x11, ASCII 32..126 in a 16x6 grid of 10x14 cells, 11 rows above the baseline.
   const FONT_W = 10, FONT_H = 14, FONT_BASE = 11;
   const font = new Image();
-  font.src = "font.png?v=51db78b-1795779252";
+  font.src = "font.png?v=0dab4f0-1795787531";
   const fontAdvance = [];
   const fontTinted = new Map();
   font.onload = () => {
@@ -161,6 +161,10 @@
     { wave: "triangle", notes: [[523, 0.12], [659, 0.12], [784, 0.12], [1047, 0.3]] }, // Retire
     { wave: "square", notes: [[294, 0.15], [262, 0.15], [220, 0.15], [147, 0.4]] },    // Lose
     { wave: "square", notes: [[1319, 0.03], [1760, 0.06]] },  // Coins
+    { wave: "triangle", notes: [[180, 0.02], [0, 0.03], [200, 0.02], [0, 0.03], [220, 0.02]] }, // Deal (riffle)
+    { wave: "square", notes: [[659, 0.07], [880, 0.07], [1319, 0.14]] },  // Win
+    { wave: "square", notes: [[330, 0.1], [196, 0.18]] },                  // Bust
+    { wave: "sine", notes: [[1175, 0.6]] },                                // Bell
   ];
   let muted = store.get(MUTE_KEY) === "1";
   let audio = null;
@@ -175,6 +179,7 @@
     if (muted || !audio || !s) return;
     let t = audio.currentTime;
     for (const [f, d] of s.notes) {
+      if (!f) { t += d; continue; } // a rest
       const o = audio.createOscillator(), g = audio.createGain();
       o.type = s.wave; o.frequency.value = f;
       g.gain.setValueAtTime(0.06, t);
@@ -251,8 +256,8 @@
   };
   requestAnimationFrame(pollPad);
 
-  // 51db78b-1795779252 is stamped by tools/build.sh so a new build is never mixed with cached old files.
-  odin.runWasm("game.wasm?v=51db78b-1795779252", null, {
+  // 0dab4f0-1795787531 is stamped by tools/build.sh so a new build is never mixed with cached old files.
+  odin.runWasm("game.wasm?v=0dab4f0-1795787531", null, {
     canvas: {
       fill_rect: (x, y, w, h, rgb, alpha) => {
         ctx.globalAlpha = alpha; ctx.fillStyle = css(rgb); ctx.fillRect(x, y, w, h); ctx.globalAlpha = 1;
