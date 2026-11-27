@@ -6,6 +6,9 @@ import "core:math"
 // world is rebuilt from the seed, so a new generator makes an old save describe a different sea). An older version is
 // refused with Load_Error.Version and the page says so.
 //
+// Version 8 (piloting) is version 7 followed by one byte: the island Head for is piloting to, 255 for none. Older
+// versions load with no course.
+//
 // Version 7 (Phase 6, crew) is version 6 followed by:
 //  u8, 7 x member     the crew: count (1 ..= 7, the captain first), then seven slots
 //  u8, 3 x member     sailors at the docked island's tavern: count, then three slots
@@ -54,13 +57,14 @@ import "core:math"
 // 34  u8     speed (percent)
 // 35  u8     docked island, 255 at sea
 // 36  u64    charted islands, bit i for island i
-SAVE_VERSION :: 7
+SAVE_VERSION :: 8
 SAVE_V4_SIZE :: 82 + ISLAND_MAX * len(Commodity) * 4
 SAVE_V5_SIZE :: SAVE_V4_SIZE + 2 * (1 + 12 * 3) + 1 + 2
 SAVE_V6_SIZE :: SAVE_V5_SIZE + ISLAND_MAX * (2 + 2 * len(Good))
 MEMBER_BYTES :: 15
 ENTRY_BYTES :: 8
-SAVE_SIZE :: SAVE_V6_SIZE + 1 + CREW_MAX * MEMBER_BYTES + 1 + CANDIDATES_MAX * MEMBER_BYTES + 2 + 1 + LOGBOOK_MAX * ENTRY_BYTES
+SAVE_V7_SIZE :: SAVE_V6_SIZE + 1 + CREW_MAX * MEMBER_BYTES + 1 + CANDIDATES_MAX * MEMBER_BYTES + 2 + 1 + LOGBOOK_MAX * ENTRY_BYTES
+SAVE_SIZE :: SAVE_V7_SIZE + 1
 NOT_SEEN :: 0xFFFF
 PRICE_MAX :: 60_000
 SAVE_V3_SIZE :: 58
@@ -135,6 +139,7 @@ save_encode :: proc(g: ^Game, buf: ^[SAVE_SIZE]u8) {
 		o[3] = e.island == NO_ISLAND ? NOT_DOCKED : u8(e.island)
 		put_u32(o[4:], u32(e.value))
 	}
+	buf[SAVE_V7_SIZE] = g.course == NO_ISLAND ? NOT_DOCKED : u8(g.course)
 	at := 82
 	for i in 0 ..< ISLAND_MAX {
 		for c in Commodity {
@@ -151,7 +156,7 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 	if data[0] != 'S' || data[1] != 'O' || data[2] != 'S' {return .Magic}
 	version := data[3]
 	if version < 2 || version > SAVE_VERSION {return .Version} // before the size: versions differ in size
-	sizes := [8]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_V4_SIZE, SAVE_V5_SIZE, SAVE_V6_SIZE, SAVE_SIZE}
+	sizes := [9]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_V4_SIZE, SAVE_V5_SIZE, SAVE_V6_SIZE, SAVE_V7_SIZE, SAVE_SIZE}
 	if len(data) != sizes[version] {return .Size}
 	turn := get_u32(data[20:])
 	turn_saved := turn
@@ -261,6 +266,13 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 			t.logbook[k] = e
 		}
 		t.n_logbook = n
+	}
+	if version >= 8 {
+		c := data[SAVE_V7_SIZE]
+		if c != NOT_DOCKED {
+			if int(c) >= t.n_islands || !t.islands[c].charted || t.docked != NO_ISLAND {return .Range}
+			t.course = int(c)
+		}
 	}
 	if version < 4 {
 		t.money = START_MONEY

@@ -621,7 +621,11 @@ draw_panel :: proc(g: ^game.Game) {
 			draw_text(tx, 28, "The chart", GOLD, 1, false)
 			draw_text(tx, 42, fmt.bprintf(buf[:], "%d of %d islands", n, g.n_islands), DIM, 1, false)
 		} else {
-			draw_text(tx, 28, fmt.bprintf(buf[:], "Heading %03d %s", g.ship.heading, game.compass(g.ship.heading)), WHITE, 1, false)
+			if g.course != game.NO_ISLAND {
+				draw_text(tx, 28, fmt.bprintf(buf[:], "For %s, %03d %s", game.island_name(g, g.course), g.ship.heading, game.compass(g.ship.heading)), GOLD, 1, false)
+			} else {
+				draw_text(tx, 28, fmt.bprintf(buf[:], "Heading %03d %s", g.ship.heading, game.compass(g.ship.heading)), WHITE, 1, false)
+			}
 			eff := int(game.effective_speed(g) + 0.5)
 			speed := g.ship.speed == 0 ? "All stop" : (eff < g.ship.speed ? fmt.bprintf(buf[:], "Speed %d%% (%d)", g.ship.speed, eff) : fmt.bprintf(buf[:], "Speed %d%%", g.ship.speed))
 			draw_text(tx, 42, speed, WHITE, 1, false)

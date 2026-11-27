@@ -123,3 +123,13 @@ Not posted. A working record.
 - To make room, Sound left the sea and docked menus (it stays on the title and the M key); Crew took its place.
 - Save version 7 (2,826 bytes: crew, sailors for hire, wages owed, the log). Older saves get a captain of base skills
   and no crew, so they play on unchanged. 62 native tests.
+
+## Piloting (the user's report, same day)
+
+- "When I'm heading for an island for a delivery, other islands block me, which makes me have to move around them.
+  This is less fun." Head for now sets a **course** (the user chose "pilot me there"): each turn under sail the ship
+  finds a way over the sea tiles to the island, steers for the farthest point of that way it can see in a straight
+  line, and stops alongside, with the sea menu back so Dock is one key away.
+- On a course a new sighting is logged and sounded but no longer stops the ship (the user's choice). Setting the
+  heading or the speed yourself drops the course; Head for at all stop sets full sail. The panel shows "For <island>".
+- Save version 8 (one byte more: the course). Older saves load with none. 66 native tests.

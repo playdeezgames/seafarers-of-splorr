@@ -1199,12 +1199,13 @@ head_for_pages_when_many_are_charted :: proc(t: ^testing.T) {
 	}
 	for i in 0 ..< n {testing.expect(t, seen[i])} // every island is reachable on some page
 	testing.expect_value(t, menu(g).items[0].arg, charted_nearest(g)) // and it wraps to the first page
-	// Choosing one far down the list steers for it.
+	// Choosing one far down the list sets a course for it.
 	do_cmd(g, .Next_Page, 0)
 	m := menu(g)
 	target := m.items[0].arg
 	choose(g, 0)
-	testing.expect_value(t, g.ship.heading, bearing_to(g, target))
+	testing.expect_value(t, g.course, target)
+	testing.expect(t, abs(wrap_heading(g.ship.heading - bearing_to(g, target) + 180) - 180) < 90)
 	// A few charted islands still fit without paging.
 	for i in 3 ..< n {g.islands[i].charted = false}
 	do_cmd(g, .Open, int(Sub.Head_For))
@@ -1551,7 +1552,115 @@ crew_state_round_trips :: proc(t: ^testing.T) {
 	v6 := good
 	v6[3] = 6
 	testing.expect_value(t, save_decode(h, v6[:SAVE_V6_SIZE]), Load_Error.None)
+	v7 := good
+	v7[3] = 7
+	testing.expect_value(t, save_decode(h, v7[:SAVE_V7_SIZE]), Load_Error.None)
+	testing.expect_value(t, h.course, NO_ISLAND)
+	title(h, 3)
+	v6[3] = 6
 	testing.expect_value(t, h.n_crew, 1)
 	testing.expect(t, h.crew[0].skills == BASE_SKILL)
 	testing.expect_value(t, h.n_logbook, 0)
+}
+
+// Piloting: Head for steers round land and stops alongside.
+
+// An open sea with a wall of land between the ship and island 1, the destination.
+walled :: proc(g: ^Game) {
+	open_sea(g)
+	g.islands[0] = {x = 60, y = 50, charted = true} // the wall: x 50 ..< 70 at y 50, 51
+	for x in 50 ..< 70 {
+		g.land[50 * WORLD_SIZE + x] = 1
+		g.land[51 * WORLD_SIZE + x] = 1
+	}
+	g.islands[1] = {x = 60, y = 30, charted = true}
+	for y in 30 ..< 32 {for x in 60 ..< 62 {g.land[y * WORLD_SIZE + x] = 2}}
+	g.n_islands = 2
+}
+
+@(test)
+head_for_pilots_round_land :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	walled(g)
+	do_cmd(g, .Open, int(Sub.Head_For))
+	do_cmd(g, .Head_For, 1)
+	testing.expect_value(t, g.course, 1)
+	for _ in 0 ..< 20 {
+		if g.course == NO_ISLAND {break}
+		do_cmd(g, .Sail, 25)
+		testing.expect(t, !is_land(g, int(g.ship.x), int(g.ship.y)))
+	}
+	testing.expect_value(t, g.course, NO_ISLAND)
+	testing.expect(t, arrived_at(g, 1))
+	testing.expect(t, g.turn < 120) // round the end of the wall, not stuck against it
+	do_cmd(g, .Dock, 1)
+	testing.expect_value(t, g.docked, 1)
+}
+
+arrived_at :: proc(g: ^Game, i: int) -> bool {
+	near: [ISLAND_MAX]int
+	n := dockable(g, near[:])
+	for j in 0 ..< n {if near[j] == i {return true}}
+	return false
+}
+
+@(test)
+a_course_keeps_going_past_sightings_and_drops_on_the_helm :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	walled(g)
+	g.islands[2] = {x = 75, y = 45} // uncharted, sighted on the way
+	g.land[45 * WORLD_SIZE + 75] = 3
+	g.n_islands = 3
+	do_cmd(g, .Head_For, 1)
+	do_cmd(g, .Sail, 25)
+	testing.expect(t, g.islands[2].charted)
+	testing.expect(t, g.course == 1 || arrived_at(g, 1)) // the sighting did not stop it
+	testing.expect(t, g.turn > 5)
+
+	do_cmd(g, .Head_For, 1)
+	if g.course == 1 {
+		do_cmd(g, .Adjust, 5)
+		testing.expect_value(t, g.course, NO_ISLAND)
+	}
+	do_cmd(g, .Set_Speed, 0)
+	do_cmd(g, .Head_For, 1)
+	if g.course == 1 {testing.expect_value(t, g.ship.speed, 100)} // a course needs way on
+}
+
+@(test)
+no_way_means_no_course :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	walled(g)
+	// Close the ship in a ring of land.
+	for y in 57 ..< 64 {for x in 57 ..< 64 {
+		if x == 57 || x == 63 || y == 57 || y == 63 {g.land[y * WORLD_SIZE + x] = 1}
+	}}
+	do_cmd(g, .Head_For, 1)
+	testing.expect_value(t, g.course, NO_ISLAND)
+}
+
+@(test)
+the_course_round_trips :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	title(g, 5)
+	voyage(g)
+	do_cmd(g, .Undock, 0)
+	other := 1
+	g.islands[other].charted = true
+	do_cmd(g, .Head_For, other)
+	testing.expect_value(t, g.course, other)
+	buf: [SAVE_SIZE]u8
+	save_encode(g, &buf)
+	h := new(Game)
+	defer free(h)
+	title(h, 3)
+	testing.expect_value(t, save_decode(h, buf[:]), Load_Error.None)
+	testing.expect_value(t, h.course, other)
+	buf[SAVE_V7_SIZE] = u8(h.n_islands)
+	title(h, 3)
+	testing.expect_value(t, save_decode(h, buf[:]), Load_Error.Range)
 }

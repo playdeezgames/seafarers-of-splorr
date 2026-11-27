@@ -193,6 +193,7 @@ Game :: struct {
 	log_page:   int,
 	spent:      [Skill]int, // a custom captain's points, while choosing
 	palmed:     bool, // the last alley hand's third card was swapped
+	course:     int, // the island Head for is piloting to, or NO_ISLAND
 	muted:      bool, // mirrors the page's mute setting, for the menu label
 	// Requests to the web layer, cleared by it.
 	want_save:  bool,
@@ -236,6 +237,7 @@ start_world :: proc(g: ^Game, seed: u64) {
 	g.foul = {}
 	g.outcome = .None
 	plain_captain(g)
+	g.course = NO_ISLAND
 	g.n_candidates, g.n_logbook, g.wage_turns, g.log_page = 0, 0, 0, 0
 	if g.n_islands > 0 {
 		if x, y, ok := mooring(g, 0); ok {
@@ -649,15 +651,18 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		case: open(g, .None)
 		}
 	case .Set_Heading:
+		drop_course(g)
 		g.ship.heading = wrap_heading(arg)
 		logf(g, "Heading %03d %s.", g.ship.heading, compass(g.ship.heading))
 		open(g, .None)
 		g.want_save = true
 	case .Adjust:
+		drop_course(g)
 		g.ship.heading = wrap_heading(g.ship.heading + arg)
 		logf(g, "Heading %03d %s.", g.ship.heading, compass(g.ship.heading))
 		g.want_save = true
 	case .Set_Speed:
+		drop_course(g)
 		g.ship.speed = clamp(arg, 0, 100)
 		if g.ship.speed == 0 {
 			logf(g, "All stop.")
@@ -671,9 +676,23 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		g.want_save = true
 	case .Head_For:
 		if arg < 0 || arg >= g.n_islands || !g.islands[arg].charted {return}
-		g.ship.heading = bearing_to(g, arg)
-		logf(g, "For %s, %03d.", island_name(g, arg), g.ship.heading)
 		open(g, .None)
+		g.course = arg
+		if arrived(g) {
+			g.course = NO_ISLAND
+			logf(g, "%s is alongside.", island_name(g, arg))
+			return
+		}
+		h, _, ok := steer(g, arg)
+		if !ok {
+			g.course = NO_ISLAND
+			sound(g, .Deny)
+			logf(g, "No way to %s.", island_name(g, arg))
+			return
+		}
+		g.ship.heading = h
+		if g.ship.speed == 0 {g.ship.speed = 100}
+		logf(g, "Course for %s.", island_name(g, arg))
 		g.want_save = true
 	case .Dock:
 		near: [ISLAND_MAX]int
@@ -695,6 +714,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 			return
 		}
 		g.docked = target
+		g.course = NO_ISLAND
 		g.screen = .Docked
 		open(g, .None)
 		sound(g, .Dock)
@@ -825,6 +845,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 	case .Undock:
 		if g.docked != NO_ISLAND {logf(g, "Cast off from %s.", island_name(g, g.docked))}
 		g.docked = NO_ISLAND
+		g.course = NO_ISLAND
 		g.n_offers = 0 // offers stay at the island
 		g.n_candidates = 0 // and so do the sailors at the tavern
 		g.screen = .Sea
@@ -833,13 +854,32 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 	}
 }
 
+drop_course :: proc(g: ^Game) {
+	if g.course != NO_ISLAND {
+		logf(g, "Course for %s dropped.", island_name(g, g.course))
+		g.course = NO_ISLAND
+	}
+}
+
 // Sail up to turns turns along the heading at the current speed. Stops early at land, at the edge of the charts, or
-// on sighting a new island. At all stop the turns simply pass.
+// on sighting a new island. At all stop the turns simply pass. On a course the ship steers itself each turn, keeps
+// going past sightings, and stops alongside its island.
 sail :: proc(g: ^Game, turns: int) {
-	rad := f32(g.ship.heading) * math.PI / 180
 	for t in 0 ..< turns {
 		if g.screen != .Sea {return}
 		step := effective_speed(g) / 100
+		if g.course != NO_ISLAND && g.ship.speed > 0 {
+			h, run, ok := steer(g, g.course)
+			if !ok {
+				sound(g, .Deny)
+				logf(g, "No way to %s.", island_name(g, g.course))
+				g.course = NO_ISLAND
+				return
+			}
+			g.ship.heading = h
+			step = min(step, max(run, 0.05)) // never past the point steered for
+		}
+		rad := f32(g.ship.heading) * math.PI / 180
 		nx := g.ship.x + math.sin(rad) * step
 		ny := g.ship.y - math.cos(rad) * step
 		if nx < 0 || ny < 0 || nx >= WORLD_SIZE || ny >= WORLD_SIZE {
@@ -857,6 +897,13 @@ sail :: proc(g: ^Game, turns: int) {
 		if s := look(g); s != NO_ISLAND {
 			sound(g, .Sighted)
 			logf(g, "Sighted %s!", island_name(g, s))
+			if g.course == NO_ISLAND {return}
+		}
+		if g.course != NO_ISLAND && arrived(g) {
+			sound(g, .Bell)
+			logf(g, "Alongside %s.", island_name(g, g.course))
+			g.course = NO_ISLAND
+			open(g, .None) // so Dock is on the menu
 			return
 		}
 		if t == turns - 1 {
