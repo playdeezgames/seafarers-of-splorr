@@ -300,17 +300,19 @@ start_world :: proc(g: ^Game, seed: u64) {
 	record_prices(g)
 }
 
+add :: proc(g: ^Game, m: ^Menu, label: string, cmd: Cmd, arg := 0) {
+	assert(m.n < MENU_MAX, "menu overflow")
+	m.items[m.n] = {label, cmd, arg}
+	m.n += 1
+}
+
+addf :: proc(g: ^Game, m: ^Menu, cmd: Cmd, arg: int, format: string, args: ..any) {
+	if m.n == MENU_MAX {return}
+	label := fmt.bprintf(g.menu_text[m.n][:], format, ..args)
+	add(g, m, label, cmd, arg)
+}
+
 menu :: proc(g: ^Game) -> (m: Menu) {
-	add :: proc(g: ^Game, m: ^Menu, label: string, cmd: Cmd, arg := 0) {
-		assert(m.n < MENU_MAX, "menu overflow")
-		m.items[m.n] = {label, cmd, arg}
-		m.n += 1
-	}
-	addf :: proc(g: ^Game, m: ^Menu, cmd: Cmd, arg: int, format: string, args: ..any) {
-		if m.n == MENU_MAX {return}
-		label := fmt.bprintf(g.menu_text[m.n][:], format, ..args)
-		add(g, m, label, cmd, arg)
-	}
 	sound_label := g.muted ? "Sound: off" : "Sound: on"
 
 	switch g.screen {
@@ -360,24 +362,7 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			add(g, &m, "Back", .Back)
 			return
 		case .Trade:
-			if g.trade_good == RATIONS {
-				add(g, &m, "Buy 10 rations", .Buy, 1)
-				add(g, &m, "Buy 100", .Buy, 10)
-				add(g, &m, "Buy 500", .Buy, 50)
-			} else if is_sea_good(Good(g.trade_good)) {
-				good := Good(g.trade_good)
-				addf(g, &m, .Sell, 1, "Sell 1 at %d", your_take(g, g.docked, good))
-				add(g, &m, "Sell 10", .Sell, 10)
-				add(g, &m, "Sell all", .Sell, ALL)
-			} else {
-				good := Good(g.trade_good)
-				addf(g, &m, .Buy, 1, "Buy 1 at %d", your_cost(g, g.docked, good))
-				add(g, &m, "Buy 10", .Buy, 10)
-				add(g, &m, "Buy max", .Buy, ALL)
-				addf(g, &m, .Sell, 1, "Sell 1 at %d", your_take(g, g.docked, good))
-				add(g, &m, "Sell 10", .Sell, 10)
-				add(g, &m, "Sell all", .Sell, ALL)
-			}
+			trade_menu(g, &m)
 			add(g, &m, "Back", .Back)
 			return
 		case .Deliveries:
@@ -425,8 +410,10 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			ship_menu(g, &m)
 			return
 		case .Vendor:
-			addf(g, &m, .Vendor_Buy, 1, "Buy %d rations at %d", VENDOR_LOT, vendor_price(g, g.docked))
-			addf(g, &m, .Vendor_Buy, 5, "Buy %d", 5 * VENDOR_LOT)
+			// Only what you can buy (the user's request, November 28, 2026).
+			lots := vendor_lots(g)
+			if lots >= 1 {addf(g, &m, .Vendor_Buy, 1, "Buy %d rations at %d", VENDOR_LOT, vendor_price(g, g.docked))}
+			if lots >= 5 {addf(g, &m, .Vendor_Buy, 5, "Buy %d", 5 * VENDOR_LOT)}
 			add(g, &m, "Back", .Back)
 			return
 		case .None, .Heading, .Adjust, .Speed, .Sail, .Head_For, .Dock, .Chart, .Careen, .Book, .Custom, .Logbook, .Encounter:
@@ -435,7 +422,7 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 		add(g, &m, "Cast off", .Undock)
 		add(g, &m, "Market", .Open, int(Sub.Market))
 		if .Delivery_Service in ds {add(g, &m, "Delivery service", .Open, int(Sub.Deliveries))}
-		if .Street_Vendor in ds {add(g, &m, "Street vendor", .Open, int(Sub.Vendor))}
+		if .Street_Vendor in ds && vendor_lots(g) > 0 {add(g, &m, "Street vendor", .Open, int(Sub.Vendor))}
 		if .Dark_Alley in ds {add(g, &m, "Dark alley", .Open, int(Sub.Alley))}
 		if .Tavern in ds {add(g, &m, "Tavern", .Open, int(Sub.Tavern))}
 		add(g, &m, .Shipyard in ds ? "Ship and shipyard" : "Ship", .Open, int(Sub.Ship))
@@ -603,6 +590,37 @@ ship_menu :: proc(g: ^Game, m: ^Menu) {
 	put(m, .Back, 0, "Back")
 }
 
+// The trade menu for the picked good: only the buys you can afford and have room for, and only the sales you have
+// the goods for (the user's request, November 28, 2026). Returns how many items it added.
+trade_menu :: proc(g: ^Game, m: ^Menu) -> int {
+	n0 := m.n
+	if g.trade_good == RATIONS {
+		lots := ration_lots(g, 50)
+		if lots >= 1 {add(g, m, "Buy 10 rations", .Buy, 1)}
+		if lots >= 10 {add(g, m, "Buy 100", .Buy, 10)}
+		if lots >= 50 {add(g, m, "Buy 500", .Buy, 50)}
+		return m.n - n0
+	}
+	good := Good(g.trade_good)
+	if !is_sea_good(good) {
+		can := buyable(g, good, 11)
+		if can >= 1 {addf(g, m, .Buy, 1, "Buy 1 at %d", your_cost(g, g.docked, good))}
+		if can >= 10 {add(g, m, "Buy 10", .Buy, 10)}
+		if can >= 2 && can != 10 {add(g, m, "Buy max", .Buy, ALL)}
+	}
+	have := g.cargo[good]
+	if have >= 1 {addf(g, m, .Sell, 1, "Sell 1 at %d", your_take(g, g.docked, good))}
+	if have >= 10 {add(g, m, "Sell 10", .Sell, 10)}
+	if have >= 2 && have != 10 {add(g, m, "Sell all", .Sell, ALL)}
+	return m.n - n0
+}
+
+// True when the trade menu for the picked good has anything in it.
+can_trade :: proc(g: ^Game) -> bool {
+	m: Menu
+	return trade_menu(g, &m) > 0
+}
+
 carries_sea_goods :: proc(g: ^Game) -> bool {
 	for good in Good.Whale_Oil ..= Good.Coral {if g.cargo[good] > 0 {return true}}
 	return false
@@ -727,9 +745,13 @@ click :: proc(g: ^Game, x, y: int) {
 open :: proc(g: ^Game, s: Sub) {
 	if g.sub == .Alley && s != .Alley {fold(g)} // leaving the table folds the hand
 	if s == .Head_For && g.sub != .Head_For {g.page = 0}
-	if s == .Logbook && g.sub != .Logbook {g.log_page = 0}
+	if s == .Logbook && g.sub != .Logbook {g.log_page = logbook_pages(g) - 1} // the newest page first
 	if s == .Custom && g.sub != .Custom {g.spent = {}}
-	g.sub = s == .Sea_Goods && !carries_sea_goods(g) ? .Market : s // nothing left to sell: back to the market
+	switch {
+	case s == .Sea_Goods && !carries_sea_goods(g): g.sub = .Market // nothing left to sell: back to the market
+	case s == .Vendor && vendor_lots(g) == 0: g.sub = .None // nothing you can buy: back to the port
+	case: g.sub = s
+	}
 	g.cursor = 0
 }
 
@@ -1072,7 +1094,14 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		if g.docked == NO_ISLAND {return}
 		if arg != RATIONS && (arg < 0 || arg > int(max(Good))) {return}
 		if arg != RATIONS && Good(arg) not_in g.trades[g.docked] && !(is_sea_good(Good(arg)) && g.cargo[Good(arg)] > 0) {return}
+		was := g.trade_good
 		g.trade_good = arg
+		if !can_trade(g) {
+			g.trade_good = was
+			sound(g, .Deny)
+			logf(g, "Nothing to buy or sell.")
+			return
+		}
 		open(g, .Trade)
 	case .Buy:
 		if g.docked == NO_ISLAND || g.sub != .Trade {return}
@@ -1089,6 +1118,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 			logf(g, "Bought %d for %d.", n, cost)
 			record_prices(g)
 			g.want_save = true
+			if !can_trade(g) {open(g, .Market)} // nothing more you can do with it
 		} else {
 			sound(g, .Deny)
 			full := g.trade_good != RATIONS && hold_used(g) + GOODS[Good(g.trade_good)].tons > hold_tons(g)
@@ -1103,8 +1133,9 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 			if takings >= BIG_SALE {note(g, .Sold, g.docked, takings)}
 			record_prices(g)
 			g.want_save = true
-			// Sold the last of a sea good: back to the sea goods, or the market when there are none left.
-			if is_sea_good(Good(g.trade_good)) && g.cargo[Good(g.trade_good)] == 0 {open(g, .Sea_Goods)}
+			// Nothing more you can do with it: back to the market (for a sea good, the sea goods, or the market when there
+			// are none left).
+			if !can_trade(g) {open(g, is_sea_good(Good(g.trade_good)) ? .Sea_Goods : .Market)}
 		} else {
 			sound(g, .Deny)
 			logf(g, "None aboard to sell.")
@@ -1140,6 +1171,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 			sound(g, .Coins)
 			logf(g, "Bought %d for %d.", n * VENDOR_LOT, cost)
 			g.want_save = true
+			if vendor_lots(g) == 0 {open(g, .Vendor)} // nothing more you can buy: back to the port
 		} else {
 			sound(g, .Deny)
 			logf(g, g.vendor_stock == 0 ? "Sold out today." : "Not enough money.")

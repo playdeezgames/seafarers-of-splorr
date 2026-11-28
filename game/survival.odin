@@ -96,7 +96,7 @@ end_voyage :: proc(g: ^Game, o: Outcome) {
 	g.docked = NO_ISLAND
 	g.want_save = true // the page clears the stored voyage
 	g.new_best = false
-	g.log_page = 0
+	g.log_page = logbook_pages(g) - 1 // the newest page first: how the voyage ended
 	switch o {
 	case .Retired:
 		sound(g, .Retire)

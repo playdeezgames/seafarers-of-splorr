@@ -4,9 +4,11 @@ import "core:math"
 
 // Trade (Phase 3): Classic's model. Commodities have a base price; each island keeps a supply and a demand for every
 // commodity, and a commodity's price there is base × demand ÷ supply. Goods are made of commodities, so a good's price
-// is the sum over its recipe. An island sells at that price and buys 10% below it. Buying a good raises the island's
-// demand for its commodities, selling raises the supply, one unit at a time, and every market drifts back to its
-// usual level each turn. The goods list is Claude's draft, approved by the user on November 27, 2026.
+// is the sum over its recipe. An island sells at that price and buys 10% below it. Buying a good draws down the
+// island's supply of its commodities and selling adds to it, one unit at a time, and every market drifts back to its
+// usual level each turn. (Buying used to raise demand instead; since demand multiplies and supply divides, a round trip
+// where demand was low turned a profit, the user's report of November 28, 2026. Now selling back retraces the very
+// prices you paid, less the spread.) The goods list is Claude's draft, approved by the user on November 27, 2026.
 
 START_MONEY :: 250
 MONEY_MAX :: 1_000_000_000
@@ -128,10 +130,20 @@ commodity_price :: proc(m: ^Market, c: Commodity) -> f32 {
 }
 
 // What the island asks for one of the good.
-sell_price :: proc(g: ^Game, i: int, good: Good) -> int {
+sell_price :: proc(g: ^Game, i: int, good: Good) -> int {return market_price(g, &g.markets[i], good)}
+
+market_price :: proc(g: ^Game, m: ^Market, good: Good) -> int {
 	p: f32
-	for c in Commodity {p += f32(GOODS[good].recipe[c]) * commodity_price(&g.markets[i], c) * season_price(g, c)}
+	for c in Commodity {p += f32(GOODS[good].recipe[c]) * commodity_price(m, c) * season_price(g, c)}
 	return max(1, int(math.round(p)))
+}
+
+// What the island pays for one of the good once it is sold: the price with that unit added to the supply, so a unit
+// sold back fetches what it cost to buy, less the spread.
+take_price :: proc(g: ^Game, i: int, good: Good) -> int {
+	m := g.markets[i]
+	nudge(&m.supply, GOODS[good].recipe, 1)
+	return max(1, market_price(g, &m, good) * (100 - DISCOUNT) / 100)
 }
 
 // What the island pays for one of the good.
@@ -140,8 +152,48 @@ buy_price :: proc(g: ^Game, i: int, good: Good) -> int {
 }
 
 // A lot of ten rations costs two grain.
-ration_price :: proc(g: ^Game, i: int) -> int {
-	return max(1, int(math.round(2 * commodity_price(&g.markets[i], .Grain) * season_price(g, .Grain))))
+ration_price :: proc(g: ^Game, i: int) -> int {return ration_price_at(g, &g.markets[i])}
+
+ration_price_at :: proc(g: ^Game, m: ^Market) -> int {
+	return max(1, int(math.round(2 * commodity_price(m, .Grain) * season_price(g, .Grain))))
+}
+
+// How many of the good (up to n) you could buy at the docked island now, prices rising as you buy, as buy would.
+// The trade menu offers only what you can buy (the user's request, November 28, 2026).
+buyable :: proc(g: ^Game, good: Good, n: int) -> int {
+	i := g.docked
+	if i == NO_ISLAND || good not_in g.trades[i] {return 0}
+	m := g.markets[i]
+	money, used, have := g.money, hold_used(g), g.cargo[good]
+	k := 0
+	for k < n {
+		p := cost_at(g, &m, good)
+		if p > money || used + GOODS[good].tons > hold_tons(g) || have >= CARGO_MAX {break}
+		money -= p
+		used += GOODS[good].tons
+		have += 1
+		k += 1
+		nudge(&m.supply, GOODS[good].recipe, -1)
+	}
+	return k
+}
+
+// How many lots of rations (up to n) you could buy now, as buy_rations would.
+ration_lots :: proc(g: ^Game, n: int) -> int {
+	i := g.docked
+	if i == NO_ISLAND {return 0}
+	m := g.markets[i]
+	money, rations := g.money, g.rations
+	k := 0
+	for k < n {
+		p := ration_price_at(g, &m)
+		if p > money || rations + RATION_LOT > RATIONS_MAX {break}
+		money -= p
+		rations += RATION_LOT
+		k += 1
+		nudge(&m.supply, #partial [Commodity]int{.Grain = 1}, -1)
+	}
+	return k
 }
 
 // The season's effect on a commodity's price, as a factor (Phase 9).
@@ -169,8 +221,8 @@ cargo_value :: proc(g: ^Game) -> int {
 	return v
 }
 
-nudge :: proc(m: ^[Commodity]int, recipe: [Commodity]int) {
-	for c in Commodity {m[c] = clamp(m[c] + recipe[c] * IMPACT, MARKET_MIN, MARKET_MAX)}
+nudge :: proc(m: ^[Commodity]int, recipe: [Commodity]int, sign: int) {
+	for c in Commodity {m[c] = clamp(m[c] + sign * recipe[c] * IMPACT, MARKET_MIN, MARKET_MAX)}
 }
 
 // Buy up to n of a good at the docked island, one at a time, stopping when money or hold space runs out. Returns how
@@ -185,7 +237,7 @@ buy :: proc(g: ^Game, good: Good, n: int) -> (count, cost: int) {
 		g.cargo[good] += 1
 		cost += p
 		count += 1
-		nudge(&g.markets[i].demand, GOODS[good].recipe)
+		nudge(&g.markets[i].supply, GOODS[good].recipe, -1)
 	}
 	return
 }
@@ -201,7 +253,7 @@ sell :: proc(g: ^Game, good: Good, n: int) -> (count, takings: int) {
 		g.cargo[good] -= 1
 		takings += p
 		count += 1
-		nudge(&g.markets[i].supply, GOODS[good].recipe)
+		nudge(&g.markets[i].supply, GOODS[good].recipe, 1)
 	}
 	return
 }
@@ -217,7 +269,7 @@ buy_rations :: proc(g: ^Game, lots: int) -> (count, cost: int) {
 		g.rations += RATION_LOT
 		cost += p
 		count += 1
-		nudge(&g.markets[i].demand, #partial [Commodity]int{.Grain = 1})
+		nudge(&g.markets[i].supply, #partial [Commodity]int{.Grain = 1}, -1)
 	}
 	return
 }

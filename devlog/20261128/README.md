@@ -31,3 +31,22 @@ Not posted. A working record.
   Money, Hold, Crew), a third only when something needs attention (Fed below 100, the dirtier hull side's cleanliness
   below 90%), and a strip along the bottom with the date and season, the wind, and rats aboard. The strip hides while a
   card covers the sea view.
+- **Fixed a money glitch** (the user's report: buy 50 flour, sell it straight back, come out ahead). Buying raised the
+  island's demand while selling raised its supply; demand multiplies the price and supply divides it, so where demand
+  was low a round trip paid. Now buying draws down the supply, and a sale is priced with its unit already added back,
+  so selling retraces the prices paid, less the 10% spread (bargaining tops out at 4%). A new test tries every good
+  across markets from glutted to starved with the best bargainer aboard; the old code failed it.
+- **Street vendor** (the user's request, like the sea goods): it shows only purchases you can make (money, stock and
+  ration room), drops off the port menu when there is nothing you can buy, and sends you back to the port after the
+  last lot you can buy.
+- **Market trade menu** (the user's request): buys show only when you can afford them and have room (Buy 10 only for
+  ten, Buy max only for more than one, prices rising as you buy), sales only when you have the goods (Sell 10 only
+  with ten aboard), the same for rations. Picking a good with nothing to buy or sell says so and stays in the market;
+  doing the last thing you can with a good goes back to the market.
+- **Captain's log opens on its newest page** (the user's report: two crew died and the log did not show it). The
+  deaths were written; the log opened on page one, the oldest fourteen entries, so on a long voyage they were pages
+  away. It now opens on the latest page, from the chart and on the voyage's end screen; Page still cycles.
+- **A full log keeps the crew's fates.** The log holds 64 entries; once full, each new one pushed out the oldest after
+  "Sailed from", so on a long voyage early deaths could vanish under landfalls and sales. Now the oldest routine entry
+  (landfall, delivery, alley win, sale, fares) goes first, and deaths, desertions, hirings, pay-offs, fights and ships
+  stay. Every way a crew member leaves the ship (killed in a fight, starved, unpaid, hungry, paid off) writes an entry.

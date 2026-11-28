@@ -654,6 +654,75 @@ prices_follow_supply_and_demand :: proc(t: ^testing.T) {
 	testing.expect_value(t, sell_price(g, 0, .Flour), 3)
 }
 
+// The user's report (November 28, 2026): buying 50 flour and selling it straight back made money. Across markets from
+// glutted to starved, with the best bargainer aboard, a round trip in one port never gains.
+@(test)
+no_round_trip_profit :: proc(t: ^testing.T) {
+	LEVELS :: [?]int{MARKET_MIN, 300, 600, 1000, 2000, 3500, MARKET_MAX}
+	for sup in LEVELS {
+		for dem in LEVELS {
+			for good in Good.Flour ..= Good.Pepper {
+				g := new(Game)
+				defer free(g)
+				trading_post(g)
+				g.trades[0] += {good}
+				g.crew[1] = {skills = BASE_SKILL, hp = STAT_MAX}
+				g.n_crew = 2
+				for sk in Skill {g.crew[1].skills[sk] = 100}
+				for c in Commodity {g.markets[0].supply[c], g.markets[0].demand[c] = sup, dem}
+				g.money = 1_000_000
+				bought, _ := buy(g, good, 1000)
+				sold, _ := sell(g, good, bought)
+				testing.expect(t, bought > 0 && sold == bought)
+				testing.expectf(t, g.money <= 1_000_000, "%v at supply %d demand %d: %d", good, sup, dem, g.money - 1_000_000)
+			}
+		}
+	}
+}
+
+// The user's request (November 28, 2026): the trade menu shows only buys you can afford and sales you have goods for.
+@(test)
+trade_menu_offers_only_what_you_can_do :: proc(t: ^testing.T) {
+	labels :: proc(g: ^Game) -> (cmds: [8]Cmd, args: [8]int, n: int) {
+		m := menu(g)
+		for k in 0 ..< m.n {
+			cmds[k], args[k] = m.items[k].cmd, m.items[k].arg
+		}
+		return cmds, args, m.n
+	}
+	g := new(Game)
+	defer free(g)
+	trading_post(g)
+	do_cmd(g, .Pick_Good, int(Good.Flour))
+	cmds, args, n := labels(g)
+	testing.expect_value(t, n, 4) // Buy 1, Buy 10, Buy max, Back: nothing to sell
+	testing.expect(t, cmds[0] == .Buy && args[0] == 1 && cmds[1] == .Buy && args[1] == 10 && cmds[2] == .Buy && args[2] == ALL)
+	do_cmd(g, .Buy, 1)
+	cmds, args, n = labels(g)
+	testing.expect_value(t, n, 5) // the buys, Sell 1, Back
+	testing.expect(t, cmds[3] == .Sell && args[3] == 1)
+	g.money = your_cost(g, 0, .Flour) // one more and no more
+	cmds, args, n = labels(g)
+	testing.expect_value(t, n, 3) // Buy 1, Sell 1, Back
+	testing.expect(t, cmds[0] == .Buy && args[0] == 1 && cmds[1] == .Sell && args[1] == 1)
+	do_cmd(g, .Buy, 1)
+	cmds, args, n = labels(g)
+	testing.expect_value(t, n, 3) // Sell 1, Sell all, Back: no money left
+	testing.expect(t, cmds[0] == .Sell && args[0] == 1 && cmds[1] == .Sell && args[1] == ALL)
+	g.money = 0
+	do_cmd(g, .Sell, 1)
+	g.money = 0
+	do_cmd(g, .Sell, 1)
+	testing.expect_value(t, g.cargo[.Flour], 0)
+	g.money = 0
+	testing.expect(t, !can_trade(g))
+	do_cmd(g, .Open, int(Sub.Market))
+	do_cmd(g, .Pick_Good, int(Good.Flour))
+	testing.expect_value(t, g.sub, Sub.Market) // nothing to buy or sell
+	do_cmd(g, .Pick_Good, RATIONS)
+	testing.expect_value(t, g.sub, Sub.Market)
+}
+
 @(test)
 buying_and_selling :: proc(t: ^testing.T) {
 	g := new(Game)
@@ -665,7 +734,7 @@ buying_and_selling :: proc(t: ^testing.T) {
 	do_cmd(g, .Buy, 10)
 	testing.expect_value(t, g.cargo[.Flour], 10)
 	testing.expect(t, g.money < START_MONEY - 60) // the price rose as we bought
-	testing.expect(t, g.markets[0].demand[.Grain] == 1000 + 10 * 3 * IMPACT)
+	testing.expect(t, g.markets[0].supply[.Grain] == 1000 - 10 * 3 * IMPACT)
 	testing.expect_value(t, hold_used(g), 10)
 	worth := score(g)
 	testing.expect_value(t, worth, g.money + 60)
@@ -903,10 +972,20 @@ the_street_vendor :: proc(t: ^testing.T) {
 	do_cmd(g, .Vendor_Buy, 100)
 	testing.expect_value(t, g.vendor_stock, 0) // sold out
 	testing.expect_value(t, g.rations, rations + VENDOR_STOCK * VENDOR_LOT)
-	do_cmd(g, .Back, 0)
+	testing.expect_value(t, g.sub, Sub.None) // nothing left to buy: back to the port
+	m := menu(g)
+	for k in 0 ..< m.n {testing.expect(t, !(m.items[k].cmd == .Open && m.items[k].arg == int(Sub.Vendor)))}
+	do_cmd(g, .Open, int(Sub.Vendor))
+	testing.expect_value(t, g.sub, Sub.None)
 	do_cmd(g, .Undock, 0)
 	do_cmd(g, .Dock, NO_ISLAND)
 	testing.expect_value(t, g.vendor_stock, VENDOR_STOCK) // restocked for the next visit
+	g.money = 3 * vendor_price(g, 0) // three lots' worth: only the single lot shows
+	do_cmd(g, .Open, int(Sub.Vendor))
+	testing.expect_value(t, g.sub, Sub.Vendor)
+	m = menu(g)
+	testing.expect_value(t, m.n, 2) // buy one lot, Back
+	testing.expect_value(t, m.items[0].arg, 1)
 }
 
 @(test)
@@ -2503,4 +2582,56 @@ weather_state_round_trips :: proc(t: ^testing.T) {
 	testing.expect_value(t, h.n_storms, 0)
 	testing.expect_value(t, h.rats, 0)
 	testing.expect_value(t, h.wind_force, Wind_Force.Fresh)
+}
+
+// The user's report (November 28, 2026): two crew died and the captain's log did not seem to show it. The deaths were
+// written, but the log opened on its first page, the oldest entries. Now it opens on the newest.
+@(test)
+crew_deaths_show_in_the_log :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	for _ in 0 ..< 20 {note(g, .Landfall, NO_ISLAND, 0)} // a long voyage's worth: two pages
+	for k in 1 ..< 4 {
+		g.crew[k] = hireling(&g.rng)
+		g.crew[k].hp = 3
+		g.n_crew += 1
+	}
+	begin_encounter(g, .Merfolk)
+	g.foe.state = .Close
+	g.foe.hp, g.foe.hp_max = 10_000, 10_000
+	for _ in 0 ..< 50 {
+		if g.foe.kind == .None || g.screen == .Over {break}
+		do_cmd(g, .Fight, 0)
+	}
+	testing.expect(t, g.n_crew < 4)
+	died := 0
+	for k in 0 ..< g.n_logbook {if g.logbook[k].kind == .Died {died += 1}}
+	testing.expect_value(t, died, 4 - g.n_crew)
+	g.sub = .Chart
+	do_cmd(g, .Open, int(Sub.Logbook))
+	testing.expect_value(t, g.log_page, logbook_pages(g) - 1)
+	last := g.log_page * LOGBOOK_PAGE
+	testing.expect_value(t, g.logbook[g.n_logbook - 1].kind == .Died || g.logbook[g.n_logbook - 1].kind == .Robbed, true)
+	testing.expect(t, g.n_logbook - 1 >= last) // the newest entry is on the page shown
+}
+
+// A full log drops routine entries first: a death early in a long voyage stays.
+@(test)
+a_full_log_keeps_the_crews_fates :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	note(g, .Died, NO_ISLAND, 7)
+	note(g, .Deserted, 0, 8)
+	for k in 0 ..< 200 {note(g, k % 2 == 0 ? .Landfall : .Sold, 0, k)}
+	testing.expect_value(t, g.n_logbook, LOGBOOK_MAX)
+	testing.expect_value(t, g.logbook[0].kind, Log_Kind.Began)
+	testing.expect_value(t, g.logbook[1].kind, Log_Kind.Died)
+	testing.expect_value(t, g.logbook[2].kind, Log_Kind.Deserted)
+	testing.expect_value(t, g.logbook[LOGBOOK_MAX - 1].value, 199) // the newest still goes in
+	// With nothing routine left, the oldest after the first goes.
+	for k in 0 ..< LOGBOOK_MAX {note(g, .Hired, 0, k)}
+	testing.expect_value(t, g.logbook[0].kind, Log_Kind.Began)
+	testing.expect_value(t, g.logbook[LOGBOOK_MAX - 1].value, LOGBOOK_MAX - 1)
 }

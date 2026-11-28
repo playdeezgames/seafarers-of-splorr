@@ -168,6 +168,13 @@ vendor_price :: proc(g: ^Game, i: int) -> int {
 	return max(1, int(math.round(0.6 * commodity_price(&g.markets[i], .Grain))))
 }
 
+// How many lots you could buy from the street vendor now: what is left, what you can pay for, and what fits.
+vendor_lots :: proc(g: ^Game) -> int {
+	i := g.docked
+	if i == NO_ISLAND || .Street_Vendor not_in g.districts[i] {return 0}
+	return max(0, min(g.vendor_stock, g.money / vendor_price(g, i), (RATIONS_MAX - g.rations) / VENDOR_LOT))
+}
+
 buy_from_vendor :: proc(g: ^Game, lots: int) -> (count, cost: int) {
 	i := g.docked
 	if i == NO_ISLAND || .Street_Vendor not_in g.districts[i] {return}

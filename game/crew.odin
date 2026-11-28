@@ -222,12 +222,14 @@ gaming_chance :: proc(g: ^Game) -> int {
 }
 
 // What you pay for one of the good, and what you are paid, after bargaining.
-your_cost :: proc(g: ^Game, i: int, good: Good) -> int {
-	return max(1, sell_price(g, i, good) * (100 - bargain_percent(g)) / 100)
+your_cost :: proc(g: ^Game, i: int, good: Good) -> int {return cost_at(g, &g.markets[i], good)}
+
+cost_at :: proc(g: ^Game, m: ^Market, good: Good) -> int {
+	return max(1, market_price(g, m, good) * (100 - bargain_percent(g)) / 100)
 }
 
 your_take :: proc(g: ^Game, i: int, good: Good) -> int {
-	return max(1, buy_price(g, i, good) * (100 + bargain_percent(g)) / 100)
+	return max(1, take_price(g, i, good) * (100 + bargain_percent(g)) / 100)
 }
 
 wages :: proc(g: ^Game) -> int {
@@ -368,9 +370,20 @@ Log_Entry :: struct {
 BIG_WIN :: 100 // alley wins this large are logged
 BIG_SALE :: 500 // and sales this large
 
+// Routine entries: when the log is full the oldest of these goes first, so the crew's fates (died, left, hired, paid
+// off), fights and ships stay (the user's report of November 28, 2026: two crew gone with no entry).
+ROUTINE :: bit_set[Log_Kind]{.Landfall, .Delivered, .Won, .Sold, .Passage}
+
 note :: proc(g: ^Game, kind: Log_Kind, island: int, value: int) {
 	if g.n_logbook == LOGBOOK_MAX {
-		for j in 1 ..< LOGBOOK_MAX - 1 {g.logbook[j] = g.logbook[j + 1]}
+		drop := 1
+		for j in 1 ..< LOGBOOK_MAX {
+			if g.logbook[j].kind in ROUTINE {
+				drop = j
+				break
+			}
+		}
+		for j in drop ..< LOGBOOK_MAX - 1 {g.logbook[j] = g.logbook[j + 1]}
 		g.n_logbook -= 1
 	}
 	g.logbook[g.n_logbook] = {g.turn, kind, island, value}
