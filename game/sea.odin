@@ -95,6 +95,7 @@ begin_encounter :: proc(g: ^Game, kind: Foe_Kind) {
 
 end_encounter :: proc(g: ^Game) {
 	g.foe = {}
+	g.battle = {}
 	if g.screen == .Sea {g.sub = .None}
 	g.cursor = 0
 }
@@ -128,8 +129,9 @@ foe_attack :: proc(g: ^Game) -> (hull, wounds: int) {
 		if info.hull_hi > 0 {hull += info.hull_lo + rng_below(&g.rng, info.hull_hi - info.hull_lo + 1)}
 		if info.wound_hi > 0 {
 			w := info.wound_lo + rng_below(&g.rng, info.wound_hi - info.wound_lo + 1)
-			wounds += w
 			k := rng_below(&g.rng, max(g.n_crew, 1))
+			w = guarded(g, k, w) // a defender in a tactical battle takes half
+			wounds += w
 			if k == 0 {
 				g.health = max(g.health - w, 0)
 			} else {
@@ -137,6 +139,7 @@ foe_attack :: proc(g: ^Game) -> (hull, wounds: int) {
 				if g.crew[k].hp <= 0 {
 					logf(g, "%s is killed!", member_name(g.crew[k], nb[:]))
 					note(g, .Died, NO_ISLAND, int(g.crew[k].name_seed))
+					notorious(g)
 					remove_member(g, k)
 				}
 			}

@@ -85,6 +85,18 @@ CANDIDATES_MAX :: 3
 TAVERN_CHANCE :: 50
 WAGE_PERIOD :: 10 // wages are counted per ten turns
 WAGE_MAX :: 20
+// A bad name (the user's rule, November 28, 2026): each crew member who dies or leaves unpaid or hungry raises the
+// wages sailors ask by NOTORIETY_STEP percent, everywhere, fading a point every NOTORIETY_FADE turns.
+NOTORIETY_STEP :: 10
+NOTORIETY_MAX :: 200
+NOTORIETY_FADE :: 20
+
+notorious :: proc(g: ^Game) {g.notoriety = min(g.notoriety + NOTORIETY_STEP, NOTORIETY_MAX)}
+
+// A wage after the captain's name: rounded up, so even a cheap hand asks more.
+asking_wage :: proc(g: ^Game, base: int) -> int {
+	return clamp((base * (100 + g.notoriety) + 99) / 100, 1, WAGE_MAX)
+}
 FISH_TURNS :: 5
 QUICK :: -1 // Begin's arg for a quick start
 NAME_LEN :: 8
@@ -180,6 +192,7 @@ begin_voyage :: proc(g: ^Game, p: Profession, skills: [Skill]int, with_crew := t
 			sb: [48]u8
 			logf(g, "Taught here: %s.", school_skills(g, g.docked, sb[:]))
 		}
+		log_beach(g)
 		make_candidates(g)
 	} else {
 		logf(g, "A new voyage begins.")
@@ -259,6 +272,7 @@ crew_starve :: proc(g: ^Game) {
 		buf: [NAME_LEN]u8
 		logf(g, "%s has died.", member_name(g.crew[k], buf[:]))
 		note(g, .Died, g.docked, int(g.crew[k].name_seed))
+		notorious(g)
 		remove_member(g, k)
 	}
 }
@@ -283,6 +297,7 @@ settle_crew :: proc(g: ^Game) -> int {
 		}
 		logf(g, "%s left, unpaid.", member_name(g.crew[k], buf[:]))
 		note(g, .Deserted, g.docked, int(g.crew[k].name_seed))
+		notorious(g)
 		remove_member(g, k)
 	}
 	g.wage_turns = 0
@@ -295,6 +310,7 @@ settle_crew :: proc(g: ^Game) -> int {
 			}
 			logf(g, "%s left, hungry.", member_name(g.crew[k], buf[:]))
 			note(g, .Deserted, g.docked, int(g.crew[k].name_seed))
+			notorious(g)
 			remove_member(g, k)
 		}
 	}
@@ -308,6 +324,7 @@ make_candidates :: proc(g: ^Game) {
 	if i == NO_ISLAND || .Tavern not_in g.districts[i] {return}
 	for g.n_candidates < CANDIDATES_MAX {
 		g.candidates[g.n_candidates] = hireling(&g.rng)
+		g.candidates[g.n_candidates].wage = asking_wage(g, g.candidates[g.n_candidates].wage)
 		g.n_candidates += 1
 	}
 }
@@ -346,7 +363,7 @@ fish :: proc(g: ^Game) -> int {
 // The captain's log (feature, November 27, 2026): the voyage's notable events, shown on the retirement screen and
 // from the chart. When it is full the oldest entry after the first is dropped.
 LOGBOOK_MAX :: 64
-LOGBOOK_PAGE :: 14
+LOGBOOK_PAGE :: 28
 
 Log_Kind :: enum u8 {
 	Began,

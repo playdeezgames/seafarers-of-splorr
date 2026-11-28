@@ -4,18 +4,20 @@ package game
 import "core:fmt"
 import "core:math"
 
-LOGICAL_W :: 400
-LOGICAL_H :: 240
+// 800 by 480 since November 28, 2026 (the user's choice: twice 400 by 240). The sea view and the chart are drawn at
+// twice their size; text keeps its pixel size, so the panel and the boxes over the sea have four times the room.
+LOGICAL_W :: 800
+LOGICAL_H :: 480
 TILE :: 10 // Bountiful Bits tiles are 10 by 10
 VIEW_TILES :: 24 // the sea view is 24 by 24 tiles on the left
-PANEL_X :: 240 // the menu panel fills the rest
+PANEL_X :: 480 // the menu panel fills the rest
 LINE :: 14 // m6x11 line height
 MENU_Y :: 64 // baseline of the first menu line
-MENU_MAX :: 9 // number keys 1 to 9
-MENU_TEXT :: 24
-LOG_LINES :: 4
+MENU_MAX :: 20 // number keys reach the first nine; the rest by arrows or a tap (no longer nine: the user, November 28, 2026)
+MENU_TEXT :: 44
+LOG_LINES :: 8
 LOG_Y :: LOGICAL_H - 4 - (LOG_LINES - 1) * LINE // baseline of the oldest log line
-LOG_LEN :: 40
+LOG_LEN :: 50
 
 Screen :: enum u8 {
 	Title,
@@ -60,7 +62,7 @@ Sub :: enum u8 {
 	Encounter, // something met at sea (g.foe)
 	Sea_Goods, // docked: selling whale oil, pearls and coral
 	Orders, // the crew's jobs: fishing and hunting rats
-	Cargo, // what is in the hold (the user's request, November 28, 2026): from the chart at sea, the ship in port
+	Cargo, // what is in the hold (the user's request, November 28, 2026): on the main menu at sea and in port
 }
 
 // Keyboard and gamepad commands; order matches ACTION in web/index.html.
@@ -143,6 +145,8 @@ Cmd :: enum u8 {
 	Mer_Sell,
 	Hunt_Rats,
 	Train, // arg: Skill, for crew member g.pick
+	Command, // take command of the fight: a tactical battle
+	Act, // arg: Act, for the battle's current actor
 }
 
 HEAD_FOR_PAGE :: MENU_MAX - 2 // islands a page when they do not all fit: leaves room for More and Back
@@ -199,6 +203,7 @@ Game :: struct {
 	trade_good: int, // the good open in the Trade submenu, or RATIONS
 	districts:  [ISLAND_MAX]bit_set[District], // from the seed
 	schools:    [ISLAND_MAX]bit_set[Skill], // what each island teaches, from the seed (training)
+	beaches:    [ISLAND_MAX][Season]Beach, // each island's careening beach by season, from the seed
 	offers:     [OFFERS_MAX]Delivery, // at the docked island's delivery service
 	n_offers:   int,
 	carried:    [CARRY_MAX]Delivery,
@@ -216,6 +221,7 @@ Game :: struct {
 	page:       int, // Head for page
 	crew:       [CREW_MAX]Member, // crew[0] is the captain
 	n_crew:     int,
+	notoriety:  int, // percent added to the wages sailors ask (deaths and desertions); fades
 	candidates: [CANDIDATES_MAX]Member, // at the docked island's tavern
 	n_candidates: int,
 	wage_turns: int, // turns since wages were last paid
@@ -233,6 +239,7 @@ Game :: struct {
 	passengers: [CABINS_MAX]Passenger,
 	n_passengers: int,
 	foe:        Encounter,
+	battle:     Battle, // a tactical battle in progress (not saved)
 	weather:    Rng, // the weather's own generator (Phase 9)
 	wind_dir:   int, // degrees the wind blows from
 	wind_force: Wind_Force,
@@ -275,6 +282,7 @@ start_world :: proc(g: ^Game, seed: u64) {
 	generate_markets(g)
 	generate_districts(g)
 	generate_schools(g)
+	generate_beaches(g)
 	generate_stakes(g)
 	g.hand_state = .None
 	for i in 0 ..< ISLAND_MAX {g.seen[i] = {turn = NEVER_SEEN}}
@@ -292,6 +300,7 @@ start_world :: proc(g: ^Game, seed: u64) {
 	g.n_fare_offers, g.n_passengers = 0, 0
 	g.foe = {}
 	start_weather(g)
+	g.notoriety = 0
 	g.n_candidates, g.n_logbook, g.wage_turns, g.log_page = 0, 0, 0, 0
 	if g.n_islands > 0 {
 		if x, y, ok := mooring(g, 0); ok {
@@ -342,8 +351,8 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 		add(g, &m, "Back", .To_Title)
 	case .Docked:
 		if g.sub == .Careen {
-			addf(g, &m, .Careen, int(Side.Port), "Port side %d%%", hull_clean(g, .Port))
-			addf(g, &m, .Careen, int(Side.Starboard), "Starboard %d%%", hull_clean(g, .Starboard))
+			addf(g, &m, .Careen, int(Side.Port), "Port side %d%%, %d turns", hull_clean(g, .Port), careen_here(g))
+			addf(g, &m, .Careen, int(Side.Starboard), "Starboard %d%%, %d turns", hull_clean(g, .Starboard), careen_here(g))
 			add(g, &m, "Back", .Back)
 			return
 		}
@@ -438,6 +447,7 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 		if .Tavern in ds {add(g, &m, "Tavern", .Open, int(Sub.Tavern))}
 		add(g, &m, .Shipyard in ds ? "Ship and shipyard" : "Ship", .Open, int(Sub.Ship))
 		add(g, &m, "Crew", .Open, int(Sub.Crew))
+		add(g, &m, "Cargo", .Open, int(Sub.Cargo))
 		add(g, &m, "Back to title", .To_Title)
 	case .Sea:
 		switch g.sub {
@@ -451,6 +461,7 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			if dockable(g, near[:]) > 0 {add(g, &m, "Dock", .Dock, NO_ISLAND)}
 			add(g, &m, "Chart", .Open, int(Sub.Chart))
 			add(g, &m, "Crew", .Open, int(Sub.Crew))
+			add(g, &m, "Cargo", .Open, int(Sub.Cargo))
 			add(g, &m, "Back to title", .To_Title)
 		case .Heading:
 			for p in 0 ..< 8 {addf(g, &m, .Set_Heading, p * 45, "%s %03d", compass(p * 45), p * 45)}
@@ -495,7 +506,6 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 		case .Chart:
 			add(g, &m, "Price book", .Open, int(Sub.Book))
 			add(g, &m, "Captain's log", .Open, int(Sub.Logbook))
-			add(g, &m, "Cargo", .Open, int(Sub.Cargo))
 			add(g, &m, "Back", .Back)
 		case .Cargo:
 			add(g, &m, "Back", .Back)
@@ -574,13 +584,14 @@ ship_menu :: proc(g: ^Game, m: ^Menu) {
 	#partial switch g.sub {
 	case .Ship:
 		// Careening in its own submenu (the user's request, November 28, 2026): the two sides' labels did not fit.
-		put(m, .Open, int(Sub.Careen), text(g, m, "Careen, %d%% clean", min(hull_clean(g, .Port), hull_clean(g, .Starboard))))
+		if can_careen(g) {
+			put(m, .Open, int(Sub.Careen), text(g, m, "Careen, %s beach, %d%%", BEACH_NAMES[beach_here(g)], min(hull_clean(g, .Port), hull_clean(g, .Starboard))))
+		}
 		if at_shipyard(g) {
 			if g.hull < hull_max(g) {put(m, .Repair, 0, text(g, m, "Repair hull, %d", repair_cost(g)))}
 			put(m, .Open, int(Sub.Ships), "Ships")
 			put(m, .Open, int(Sub.Fittings), "Fittings")
 		}
-		put(m, .Open, int(Sub.Cargo), "Cargo")
 	case .Ships:
 		for s in Ship_Type {
 			if s == g.ship_type {
@@ -655,6 +666,18 @@ encounter_menu :: proc(g: ^Game, m: ^Menu) {
 		m.n += 1
 	}
 	f := &g.foe
+	if g.battle.on && g.battle.actor < g.n_crew {
+		// A tactical battle: this person's turn.
+		k := g.battle.actor
+		s, v := attack_skill(g, k)
+		put(m, .Act, int(Act.Attack), fmt.bprintf(g.menu_text[m.n][:], "Attack (%s %d%%)", SKILL_NAMES[s], v))
+		put(m, .Act, int(Act.Aim), fmt.bprintf(g.menu_text[m.n][:], "Aimed shot (Spot %d%%)", max(g.crew[k].skills[.Spot] - AIM_PENALTY, 0)))
+		put(m, .Act, int(Act.Defend), "Defend")
+		if patch_useful(g) {put(m, .Act, int(Act.Patch), fmt.bprintf(g.menu_text[m.n][:], "Patch hull (Repair %d%%)", g.crew[k].skills[.Repair]))}
+		put(m, .Act, int(Act.All), "All attack")
+		if k == 0 {put(m, .Back, 0, "Back to orders")}
+		return
+	}
 	if f.state == .Distant {
 		put(m, .Flee, 0, "Steer away")
 		put(m, .Close_In, 0, "Close with it")
@@ -663,18 +686,22 @@ encounter_menu :: proc(g: ^Game, m: ^Menu) {
 	switch f.kind {
 	case .Pirates:
 		put(m, .Fight, 0, "Fight")
+		put(m, .Command, 0, "Take command")
 		put(m, .Flee, 0, "Flee")
 		if !f.parleyed {put(m, .Parley, 0, "Parley")}
 		put(m, .Bribe, 0, fmt.bprintf(g.menu_text[m.n][:], "Pay them %d", bribe_cost(g)))
 	case .Monster:
 		put(m, .Fight, 0, "Fight")
+		put(m, .Command, 0, "Take command")
 		put(m, .Flee, 0, "Flee")
 	case .Whale:
 		put(m, .Fight, 0, "Hunt it")
+		put(m, .Command, 0, "Lead the hunt")
 		put(m, .Sail_On, 0, "Let it go")
 	case .Merfolk:
 		if f.hostile {
 			put(m, .Fight, 0, "Fight")
+			put(m, .Command, 0, "Take command")
 			put(m, .Flee, 0, "Flee")
 		} else if f.state == .Trading {
 			put(m, .Mer_Buy, int(Good.Pearls), fmt.bprintf(g.menu_text[m.n][:], "Buy a pearl, %d", merfolk_sells(g, .Pearls)))
@@ -946,14 +973,26 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		g.foe.state = .Close
 		g.cursor = 0
 	case .Fight:
-		if g.sub != .Encounter || g.foe.state == .Distant || g.foe.state == .Trading {return}
+		if g.sub != .Encounter || g.foe.state == .Distant || g.foe.state == .Trading || g.battle.on {return}
 		if g.foe.kind == .Merfolk {g.foe.hostile = true}
 		sound(g, .Clash)
 		fight_round(g)
 		g.cursor = 0
 		g.want_save = true
+	case .Command:
+		if !can_command(g) || g.battle.on {return}
+		sound(g, .Clash)
+		take_command(g)
+		logf(g, "You take command.")
+	case .Act:
+		if !g.battle.on || g.sub != .Encounter || arg < 0 || arg > int(max(Act)) {return}
+		if Act(arg) == .Patch && !patch_useful(g) {return}
+		sound(g, .Clash)
+		act(g, Act(arg))
+		g.cursor = 0
+		g.want_save = true
 	case .Flee:
-		if g.sub != .Encounter {return}
+		if g.sub != .Encounter || g.battle.on {return}
 		flee(g)
 		g.want_save = true
 	case .Parley:
@@ -1019,11 +1058,17 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		case .Trade:
 			if g.trade_good >= 0 && is_sea_good(Good(g.trade_good)) {open(g, .Sea_Goods)} else {open(g, .Market)}
 		case .Sea_Goods: open(g, .Market)
-		case .Encounter: sound(g, .Deny) // settle it first
+		case .Encounter:
+			if g.battle.on && g.battle.actor == 0 {
+				g.battle = {} // back to the quick orders, at a round's start only
+				g.cursor = 0
+				logf(g, "Back to your orders.")
+			} else {
+				sound(g, .Deny) // settle it first
+			}
 		case .Offer, .Carried: open(g, .Deliveries)
 		case .Carried_Detail: open(g, .Carried)
 		case .Book, .Logbook: open(g, .Chart)
-		case .Cargo: open(g, g.screen == .Docked ? .Ship : .Chart)
 		case .Member, .Orders: open(g, .Crew)
 		case .Candidate: open(g, .Tavern)
 		case .Ships, .Fittings, .Careen: open(g, .Ship)
@@ -1105,6 +1150,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 			sb: [48]u8
 			logf(g, "Taught here: %s.", school_skills(g, target, sb[:]))
 		}
+		log_beach(g)
 		if g.seen[target].turn == NEVER_SEEN {note(g, .Landfall, target, 0)}
 		if done, paid := complete_deliveries(g); done > 0 {
 			sound(g, .Coins)

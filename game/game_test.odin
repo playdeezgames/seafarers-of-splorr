@@ -1,6 +1,7 @@
 #+build !js
 package game
 
+import "core:fmt"
 import "core:math"
 import "core:testing"
 
@@ -327,9 +328,10 @@ log_keeps_the_newest_lines :: proc(t: ^testing.T) {
 	g := new(Game)
 	defer free(g)
 	for i in 0 ..< LOG_LINES + 2 {logf(g, "line %d", i)}
-	testing.expect_value(t, log_line(g, LOG_LINES - 1), "line 5")
+	last: [16]u8
+	testing.expect_value(t, log_line(g, LOG_LINES - 1), fmt.bprintf(last[:], "line %d", LOG_LINES + 1))
 	testing.expect_value(t, log_line(g, 0), "line 2")
-	logf(g, "%s", "a very long line that will certainly not fit in the forty bytes")
+	logf(g, "%s", "a very long line that will certainly not fit in the fifty bytes a log line may hold")
 	testing.expect_value(t, len(log_line(g, LOG_LINES - 1)), LOG_LEN)
 }
 
@@ -527,7 +529,7 @@ fouling_slows_and_careening_cleans :: proc(t: ^testing.T) {
 	do_cmd(g, .Sail, 5)
 	testing.expect_value(t, g.foul[.Port], 100)
 
-	// Careening needs land close by.
+	// Careening needs a beach: in port, where this season's beach allows it.
 	turn := g.turn
 	do_cmd(g, .Careen, int(Side.Port))
 	testing.expect_value(t, g.turn, turn)
@@ -535,11 +537,49 @@ fouling_slows_and_careening_cleans :: proc(t: ^testing.T) {
 	g.islands[0] = {x = 61, y = 60, charted = true}
 	g.land[60 * WORLD_SIZE + 61] = 1
 	g.n_islands = 1
+	g.docked = 0
+	g.beaches[0] = {.Spring = .Good, .Summer = .Good, .Autumn = .Good, .Winter = .None}
 	testing.expect(t, can_careen(g))
 	do_cmd(g, .Careen, int(Side.Port))
 	testing.expect_value(t, g.turn, turn + CAREEN_TURNS)
 	testing.expect_value(t, g.foul[.Port], 0)
 	testing.expect_value(t, g.foul[.Starboard], FOUL_MAX)
+}
+
+// The user's rule (November 28, 2026): beaches differ by island and by season.
+@(test)
+beaches_differ_by_island_and_season :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	g.islands[0] = {x = 61, y = 60, charted = true}
+	g.n_islands = 1
+	g.docked = 0
+	g.turn = 0 // spring
+	g.beaches[0] = {.Spring = .Poor, .Summer = .Fair, .Autumn = .Good, .Winter = .None}
+	g.foul = {.Port = FOUL_MAX, .Starboard = FOUL_MAX}
+	testing.expect_value(t, careen_here(g), 2 * careen_turns(g)) // a poor beach: twice as long
+	careen(g, .Port)
+	testing.expect_value(t, hull_clean(g, .Port), 75) // and some growth left
+	g.turn = 3 * MONTH_TURNS // summer
+	testing.expect_value(t, careen_here(g), (3 * careen_turns(g) + 1) / 2)
+	careen(g, .Starboard)
+	testing.expect_value(t, hull_clean(g, .Starboard), 90)
+	g.turn = 9 * MONTH_TURNS // winter: no beach
+	testing.expect(t, !can_careen(g))
+	foul := g.foul
+	careen(g, .Port)
+	testing.expect(t, g.foul == foul)
+	// From the seed: every island rated, some with none, some good, in every season across a few worlds.
+	seen: [Beach]int
+	for seed in 1 ..= 10 {
+		h := new(Game)
+		defer free(h)
+		title(h, u64(seed))
+		voyage(h)
+		for i in 0 ..< h.n_islands {for s in Season {seen[h.beaches[i][s]] += 1}}
+	}
+	for b in Beach {testing.expect(t, seen[b] > 0)}
 }
 
 @(test)
@@ -872,11 +912,11 @@ docked_menu_shows_the_districts :: proc(t: ^testing.T) {
 	defer free(g)
 	busy_port(g)
 	m := menu(g)
-	testing.expect_value(t, m.n, 8) // cast off, market, deliveries, vendor, alley, careen, sound, title
+	testing.expect_value(t, m.n, 9) // cast off, market, deliveries, vendor, alley, ship, crew, cargo, title
 	testing.expect_value(t, m.items[2].arg, int(Sub.Deliveries))
 	testing.expect_value(t, m.items[3].arg, int(Sub.Vendor))
 	g.districts[0] = {}
-	testing.expect_value(t, menu(g).n, 5)
+	testing.expect_value(t, menu(g).n, 6)
 }
 
 @(test)
@@ -1584,7 +1624,7 @@ the_captains_log :: proc(t: ^testing.T) {
 	testing.expect_value(t, g.n_logbook, LOGBOOK_MAX)
 	testing.expect_value(t, g.logbook[0].kind, Log_Kind.Began) // the first entry stays
 	testing.expect_value(t, g.logbook[LOGBOOK_MAX - 1].value, 99)
-	testing.expect_value(t, logbook_pages(g), 5)
+	testing.expect_value(t, logbook_pages(g), (LOGBOOK_MAX + LOGBOOK_PAGE - 1) / LOGBOOK_PAGE)
 	do_cmd(g, .Undock, 0)
 	do_cmd(g, .Open, int(Sub.Chart))
 	do_cmd(g, .Open, int(Sub.Logbook))
@@ -1788,6 +1828,7 @@ the_ship_menu_and_the_shipyard :: proc(t: ^testing.T) {
 	g := new(Game)
 	defer free(g)
 	shipyard(g)
+	g.beaches[0] = {.Spring = .Good, .Summer = .Good, .Autumn = .Good, .Winter = .Good}
 	m := menu(g)
 	found := -1
 	for k in 0 ..< m.n {if m.items[k].cmd == .Open && m.items[k].arg == int(Sub.Ship) {found = k}}
@@ -1795,9 +1836,12 @@ the_ship_menu_and_the_shipyard :: proc(t: ^testing.T) {
 	choose(g, found)
 	m = menu(g)
 	testing.expect(t, m.items[0].cmd == .Open && m.items[0].arg == int(Sub.Careen))
-	testing.expect_value(t, m.n, 5) // Careen, Ships, Fittings, Cargo, Back (no repair: the hull is sound)
+	testing.expect_value(t, m.n, 4) // Careen, Ships, Fittings, Back (no repair: the hull is sound)
 	g.districts[0] = {}
-	testing.expect_value(t, menu(g).n, 3) // Careen and Cargo, without a shipyard
+	testing.expect_value(t, menu(g).n, 2) // Careen and Back, without a shipyard
+	g.beaches[0] = {}
+	testing.expect_value(t, menu(g).n, 1) // no beach this season: no Careen
+	g.beaches[0] = {.Spring = .Good, .Summer = .Good, .Autumn = .Good, .Winter = .Good}
 	// Careening has its own submenu, which goes back to the ship menu.
 	choose(g, 0)
 	testing.expect_value(t, g.sub, Sub.Careen)
@@ -2707,4 +2751,122 @@ a_lesson :: proc(t: ^testing.T) {
 	do_cmd(g, .Back, 0)
 	do_cmd(g, .Undock, 0)
 	testing.expect(t, !can_train(g, 0, .Melee))
+}
+
+// The user's rule (November 28, 2026): deaths and desertions make sailors ask more, everywhere, fading with time.
+@(test)
+a_bad_name_raises_wages :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	testing.expect_value(t, g.notoriety, 0)
+	testing.expect_value(t, asking_wage(g, 3), 3)
+	g.crew[1] = hireling(&g.rng)
+	g.crew[1].hp = 1
+	g.n_crew = 2
+	g.satiety = 0
+	crew_starve(g) // dies of hunger
+	testing.expect_value(t, g.n_crew, 1)
+	testing.expect_value(t, g.notoriety, NOTORIETY_STEP)
+	testing.expect_value(t, asking_wage(g, 3), 4) // 3.3, rounded up
+	testing.expect_value(t, asking_wage(g, 10), 11)
+	// Unpaid crew leave and add to it.
+	g.crew[1] = hireling(&g.rng)
+	g.n_crew = 2
+	g.money = 0
+	g.wage_turns = WAGE_PERIOD
+	settle_crew(g)
+	testing.expect_value(t, g.notoriety, 2 * NOTORIETY_STEP)
+	// It fades a point every NOTORIETY_FADE turns.
+	g.weather_off = true
+	for _ in 0 ..< NOTORIETY_FADE * 5 {tick(g, false)}
+	testing.expect_value(t, g.notoriety, 2 * NOTORIETY_STEP - 5)
+	// Paying someone off is no mark against you.
+	n := g.notoriety
+	g.crew[1] = hireling(&g.rng)
+	g.n_crew = 2
+	g.docked = 0
+	dismiss(g, 1)
+	testing.expect_value(t, g.notoriety, n)
+	// Saved and restored.
+	v := new(Game)
+	defer free(v)
+	title(v, 9)
+	voyage(v)
+	v.notoriety = 37
+	buf: [SAVE_SIZE]u8
+	save_encode(v, &buf)
+	h := new(Game)
+	defer free(h)
+	testing.expect_value(t, save_decode(h, buf[:]), Load_Error.None)
+	testing.expect_value(t, h.notoriety, 37)
+}
+
+// Tactical battles (the user's request, November 28, 2026): each person aboard acts, then the foe.
+@(test)
+a_tactical_battle :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	for k in 1 ..< 3 {
+		g.crew[k] = hireling(&g.rng)
+		g.n_crew += 1
+	}
+	begin_encounter(g, .Monster)
+	g.foe.state = .Close
+	g.foe.hp, g.foe.hp_max = 10_000, 10_000
+	m := menu(g)
+	found := -1
+	for k in 0 ..< m.n {if m.items[k].cmd == .Command {found = k}}
+	testing.expect(t, found >= 0)
+	choose(g, found)
+	testing.expect(t, g.battle.on)
+	testing.expect_value(t, g.battle.actor, 0)
+	// Each person's turn offers the acts; Back to orders only at the round's start.
+	m = menu(g)
+	testing.expect(t, m.items[0].cmd == .Act && m.items[0].arg == int(Act.Attack))
+	testing.expect_value(t, m.items[m.n - 1].cmd, Cmd.Back)
+	g.hull = hull_max(g) - 20
+	turn := g.turn
+	hull := g.hull
+	do_cmd(g, .Act, int(Act.Defend))
+	testing.expect(t, g.battle.guard[0])
+	testing.expect_value(t, g.battle.actor, 1)
+	testing.expect(t, menu(g).items[menu(g).n - 1].cmd != .Back) // mid-round: no way out but to finish it
+	do_cmd(g, .Back, 0)
+	testing.expect(t, g.battle.on)
+	g.crew[1].skills[.Repair] = 100
+	do_cmd(g, .Act, int(Act.Patch))
+	testing.expect(t, g.hull > hull)
+	testing.expect_value(t, g.battle.actor, 2)
+	testing.expect_value(t, g.turn, turn) // a battle round takes no turns, as a quick round
+	do_cmd(g, .Act, int(Act.Attack)) // the last to act: then the foe
+	testing.expect_value(t, g.battle.actor, 0)
+	testing.expect(t, !g.battle.guard[0]) // a new round
+	testing.expect_value(t, g.foe.kind, Foe_Kind.Monster)
+	// Back to the quick orders at the round's start.
+	do_cmd(g, .Back, 0)
+	testing.expect(t, !g.battle.on)
+	testing.expect_value(t, g.sub, Sub.Encounter)
+	// All attack settles the round; a slain foe ends it.
+	do_cmd(g, .Command, 0)
+	g.foe.hp = 1
+	for k in 0 ..< g.n_crew {g.crew[k].skills[.Melee] = 100}
+	do_cmd(g, .Act, int(Act.All))
+	testing.expect_value(t, g.foe.kind, Foe_Kind.None)
+	testing.expect(t, !g.battle.on)
+}
+
+@(test)
+a_guard_takes_half :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	g.battle = {on = true}
+	testing.expect_value(t, guarded(g, 0, 9), 9)
+	g.battle.guard[0] = true
+	testing.expect_value(t, guarded(g, 0, 9), 5)
+	testing.expect_value(t, guarded(g, 1, 9), 9)
+	g.battle = {}
+	testing.expect_value(t, guarded(g, 0, 9), 9)
 }

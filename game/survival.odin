@@ -55,6 +55,7 @@ tick :: proc(g: ^Game, under_way: bool) -> bool {
 	}
 	drift_markets(g)
 	weather_turn(g)
+	if g.notoriety > 0 && g.turn % NOTORIETY_FADE == 0 {g.notoriety -= 1}
 	if under_way {
 		for s in Side {g.foul[s] = min(g.foul[s] + foul_per_turn(g), FOUL_MAX)}
 	}
@@ -118,11 +119,11 @@ end_voyage :: proc(g: ^Game, o: Outcome) {
 	}
 }
 
-// Careening needs an island close by, as docking does.
-can_careen :: proc(g: ^Game) -> bool {
-	near: [1]int
-	return dockable(g, near[:]) > 0
-}
+// Careening needs a beach: docked, at an island whose beach this season is fit for it.
+can_careen :: proc(g: ^Game) -> bool {return beach_here(g) != .None}
+
+// The turns careening a side takes here: the crew's (Repair) time, longer on a poorer beach.
+careen_here :: proc(g: ^Game) -> int {return (careen_turns(g) * BEACH_TURNS[beach_here(g)] + 99) / 100}
 
 careen :: proc(g: ^Game, s: Side) {
 	if !can_careen(g) {
@@ -130,9 +131,14 @@ careen :: proc(g: ^Game, s: Side) {
 		logf(g, "No beach to careen on.")
 		return
 	}
-	for _ in 0 ..< careen_turns(g) {
+	b := beach_here(g) // the beach when the work began
+	for _ in 0 ..< careen_here(g) {
 		if !tick(g, false) {return}
 	}
-	g.foul[s] = 0
-	logf(g, "%s side scraped clean.", s == .Port ? "Port" : "Starboard")
+	g.foul[s] = min(g.foul[s], FOUL_MAX * BEACH_LEFT[b] / 100)
+	if BEACH_LEFT[b] == 0 {
+		logf(g, "%s side scraped clean.", s == .Port ? "Port" : "Starboard")
+	} else {
+		logf(g, "%s side scraped, %d%% clean.", s == .Port ? "Port" : "Starboard", hull_clean(g, s))
+	}
 }

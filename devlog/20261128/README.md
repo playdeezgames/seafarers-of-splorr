@@ -65,3 +65,28 @@ Not posted. A working record.
   for. A lesson adds 5 points (to at most 95), costs 10 + skill²/20 (15 at 10%, 135 at 50%, 330 at 80%), and takes
   three turns in port. Logged as "trained at". Schools come from the world seed, so saves are unchanged. Checked in
   the browser: Doni's Track 10% to 15%.
+- **Crew skills at a glance** (the user's request): the Crew list's panel now shows each person's health and all
+  eight skills (Na Pi Re Sp Tr Ba Ga Me), each column's best in gold, and a Best row beneath, since the best aboard
+  is what counts. Trades show beside the names in the menu, and wages on each member's card.
+
+## After the critique (the user's decisions, November 28, 2026)
+
+Claude made the case against the game at the user's request; the user picked what to act on, and chose each design.
+
+- **Careening beaches by season:** each island's beach is rated none, poor, fair or good for each season (from the
+  world seed; winter is often a step worse). A fair beach takes half again as long and leaves the side 90% clean, a
+  poor one twice as long and 75%; with none there, Careen is not offered. Docking says "A fair beach for careening."
+  and the bottom strip shows the beach in port. Careening happens in port only (the old sea path was unreachable).
+- **A bad name costs wages:** each crew member who dies or leaves unpaid or hungry adds 10% to the wages sailors ask,
+  everywhere (to at most 200%), fading a point every 20 turns. Paying someone off is no mark. The tavern shows it.
+  Save version 12 (2 bytes more).
+- **800×480:** twice the old size. The sea view and chart draw at double size; text keeps its pixel size, so the panel
+  holds 20 menu items (the nine-item limit is gone; keys 1 to 9 reach the first nine) and 8 log lines, the stats fit
+  on one line, the captain's log shows 28 entries a page, and the crew table spans the sea view with trades, wages and
+  all eight skills. Older boxes (cards, letters, the shipyard) sit centred over the sea. Cargo moved to the main menus.
+- **Tactical battles:** "Take command" (or "Lead the hunt") beside Fight: each person aboard, captain first, chooses
+  Attack (Melee, or Track against a whale), Aimed shot (Spot less 15, harder hits), Defend (half the wounds this
+  round) or Patch hull (Repair, against foes that strike the hull); "All attack" finishes the round, and "Back to
+  orders" returns to the quick menu at a round's start. Then the foe acts as in a quick round. Not saved mid-battle.
+- Checked in the browser: the 800×480 layout, the crew table, the market, the chart, and a battle with a sea monster
+  (guards, a miss, the foe's turn, Patch hull offered once damaged). 106 native tests.

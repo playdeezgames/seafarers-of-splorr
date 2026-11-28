@@ -6,6 +6,10 @@ import "core:math"
 // world is rebuilt from the seed, so a new generator makes an old save describe a different sea). An older version is
 // refused with Load_Error.Version and the page says so.
 //
+// Version 12 (November 28, 2026) is version 11 followed by:
+//  u16         notoriety: percent added to sailors' wages after deaths and desertions
+// Older versions load with none.
+//
 // Version 11 (Phase 9, weather) is version 10 followed by:
 //  u64         the weather's generator
 //  u16         the direction the wind blows from (degrees)
@@ -82,7 +86,7 @@ import "core:math"
 // 34  u8     speed (percent)
 // 35  u8     docked island, 255 at sea
 // 36  u64    charted islands, bit i for island i
-SAVE_VERSION :: 11
+SAVE_VERSION :: 12
 SAVE_V4_SIZE :: 82 + ISLAND_MAX * len(Commodity) * 4
 SAVE_V5_SIZE :: SAVE_V4_SIZE + 2 * (1 + 12 * 3) + 1 + 2
 SAVE_V6_SIZE :: SAVE_V5_SIZE + ISLAND_MAX * (2 + 2 * LAND_GOODS)
@@ -95,7 +99,8 @@ SAVE_V9_SIZE :: SAVE_V8_SIZE + 1 + len(Fitting) + 2 + 1 + FARE_OFFERS_MAX * PASS
 SEA_GOODS :: len(Good) - LAND_GOODS
 SAVE_V10_SIZE :: SAVE_V9_SIZE + 4 + 2 + 1 + 2 * SEA_GOODS
 STORM_BYTES :: 12
-SAVE_SIZE :: SAVE_V10_SIZE + 8 + 2 + 1 + 1 + STORMS_MAX * STORM_BYTES + 2
+SAVE_V11_SIZE :: SAVE_V10_SIZE + 8 + 2 + 1 + 1 + STORMS_MAX * STORM_BYTES + 2
+SAVE_SIZE :: SAVE_V11_SIZE + 2
 NOT_SEEN :: 0xFFFF
 PRICE_MAX :: 60_000
 SAVE_V3_SIZE :: 58
@@ -202,6 +207,7 @@ save_encode :: proc(g: ^Game, buf: ^[SAVE_SIZE]u8) {
 		o[11] = st.seen ? 1 : 0
 	}
 	put_u16(buf[at11 + STORMS_MAX * STORM_BYTES:], u16(g.rats))
+	put_u16(buf[SAVE_V11_SIZE:], u16(g.notoriety))
 	at := 82
 	for i in 0 ..< ISLAND_MAX {
 		for c in Commodity {
@@ -218,7 +224,7 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 	if data[0] != 'S' || data[1] != 'O' || data[2] != 'S' {return .Magic}
 	version := data[3]
 	if version < 2 || version > SAVE_VERSION {return .Version} // before the size: versions differ in size
-	sizes := [12]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_V4_SIZE, SAVE_V5_SIZE, SAVE_V6_SIZE, SAVE_V7_SIZE, SAVE_V8_SIZE, SAVE_V9_SIZE, SAVE_V10_SIZE, SAVE_SIZE}
+	sizes := [13]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_V4_SIZE, SAVE_V5_SIZE, SAVE_V6_SIZE, SAVE_V7_SIZE, SAVE_V8_SIZE, SAVE_V9_SIZE, SAVE_V10_SIZE, SAVE_V11_SIZE, SAVE_SIZE}
 	if len(data) != sizes[version] {return .Size}
 	turn := get_u32(data[20:])
 	turn_saved := turn
@@ -431,6 +437,10 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 		}
 		t.rats = int(get_u16(data[at + STORMS_MAX * STORM_BYTES:]))
 		if t.rats > RATS_MAX {return .Range}
+	}
+	if version >= 12 {
+		t.notoriety = int(get_u16(data[SAVE_V11_SIZE:]))
+		if t.notoriety > NOTORIETY_MAX {return .Range}
 	}
 	if hold_used(t) > hold_tons(t) {return .Range} // after the ship and the cargo are both read
 	t.rng.state = get_u64(data[12:])
