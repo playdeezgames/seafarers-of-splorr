@@ -171,6 +171,9 @@ draw :: proc(g: ^game.Game) {
 		draw_book(g, g.book_good, 16)
 	} else if g.screen == .Over || (g.screen == .Sea && g.sub == .Logbook) {
 		draw_logbook(g)
+	} else if g.sub == .Cargo {
+		fill_rect(0, 0, game.PANEL_X, game.LOGICAL_H, DEEP, 1)
+		draw_cargo(g, 16)
 	} else if g.screen == .Start {
 		draw_sea(g)
 		draw_start(g)
@@ -191,6 +194,10 @@ draw :: proc(g: ^game.Game) {
 		}
 		if g.sub == .Candidate && g.pick < g.n_candidates {
 			draw_sheet(g.candidates[g.pick], "For hire", false)
+		}
+		if g.screen == .Docked && (g.sub == .Market || g.sub == .Sea_Goods) {
+			fill_rect(0, 48, game.PANEL_X, game.LOGICAL_H - 48, DEEP, 0.88)
+			draw_cargo(g, 64)
 		}
 		if g.screen == .Docked && g.sub == .Trade && g.trade_good != game.RATIONS && !game.is_sea_good(game.Good(g.trade_good)) {
 			fill_rect(0, 48, game.PANEL_X, game.LOGICAL_H - 48, DEEP, 0.88)
@@ -325,6 +332,41 @@ draw_book :: proc(g: ^game.Game, good: game.Good, y0: f32) {
 	}
 }
 
+// What is in the hold (the user's request, November 28, 2026): each good aboard with its count, tons and worth at base
+// price, then rations. A full panel from the chart or the ship menu, and over the sea in the market.
+draw_cargo :: proc(g: ^game.Game, y0: f32) {
+	buf: [48]u8
+	draw_text(8, y0, fmt.bprintf(buf[:], "Cargo: %d of %d tons", game.hold_used(g), game.hold_tons(g)), GOLD, 1, false)
+	y := y0 + f32(game.LINE) + 2
+	draw_text(8, y, "Good", DIM, 1, false)
+	draw_text(104, y, "Aboard", DIM, 1, false)
+	draw_text(152, y, "Tons", DIM, 1, false)
+	draw_text(188, y, "Worth", DIM, 1, false)
+	fill_rect(6, y + 3, game.PANEL_X - 12, 1, EDGE, 1)
+	total, rows := 0, 0
+	for good in game.Good {
+		n := g.cargo[good]
+		if n == 0 {continue}
+		worth := n * game.base_value(good)
+		total += worth
+		y += f32(game.LINE)
+		if y > game.LOGICAL_H - 2 * f32(game.LINE) {continue} // keep room for the last lines; still count the worth
+		rows += 1
+		colour: u32 = game.is_sea_good(good) ? GOLD : WHITE
+		draw_text(8, y, game.GOODS[good].name, colour, 1, false)
+		draw_text(104, y, fmt.bprintf(buf[:], "%d", n), colour, 1, false)
+		draw_text(152, y, fmt.bprintf(buf[:], "%d", n * game.GOODS[good].tons), colour, 1, false)
+		draw_text(188, y, fmt.bprintf(buf[:], "%d", worth), colour, 1, false)
+	}
+	if rows == 0 {
+		y += f32(game.LINE)
+		draw_text(8, y, "The hold is empty.", WHITE, 1, false)
+	}
+	y = min(y, game.LOGICAL_H - 2 * f32(game.LINE)) + f32(game.LINE)
+	draw_text(8, y, fmt.bprintf(buf[:], "Rations %d", g.rations), DIM, 1, false)
+	if total > 0 {draw_text(104, y, fmt.bprintf(buf[:], "Worth %d at base", total), DIM, 1, false)}
+}
+
 // The dark alley's table: the two cards up, the third once the bet is in, and the rule.
 draw_alley :: proc(g: ^game.Game) {
 	fill_rect(0, 0, game.PANEL_X, game.LOGICAL_H, FELT, 1)
@@ -437,7 +479,7 @@ draw_hud :: proc(g: ^game.Game) {
 		if clean < CLEAN_WARN {draw_text(80, 40, fmt.bprintf(buf[:], "Hull clean %d%%", clean), clean < 60 ? GOLD : DIM, 1, false)}
 	}
 
-	OVERLAID :: bit_set[game.Sub]{.Offer, .Carried_Detail, .Crew, .Member, .Candidate, .Encounter, .Ships, .Fittings, .Fare, .Passenger, .Trade}
+	OVERLAID :: bit_set[game.Sub]{.Offer, .Carried_Detail, .Crew, .Member, .Candidate, .Encounter, .Ships, .Fittings, .Fare, .Passenger, .Trade, .Market, .Sea_Goods}
 	if g.sub in OVERLAID {return}
 	y := f32(game.LOGICAL_H)
 	fill_rect(0, y - 15, game.PANEL_X, 15, DEEP, 0.7)
@@ -734,7 +776,7 @@ draw_panel :: proc(g: ^game.Game) {
 	case .Docked:
 		if crew_panel(g, tx) {break}
 		#partial switch g.sub {
-		case .Ship, .Ships, .Fittings:
+		case .Ship, .Ships, .Fittings, .Cargo:
 			draw_text(tx, 14, game.at_shipyard(g) ? "Shipyard" : "Your ship", GOLD, 1, false)
 			draw_text(tx, 28, fmt.bprintf(buf[:], "%s, hull %d/%d", game.SHIPS[g.ship_type].name, g.hull, game.hull_max(g)), WHITE, 1, false)
 			draw_text(tx, 42, fmt.bprintf(buf[:], "Money %d", g.money), DIM, 1, false)
@@ -752,7 +794,7 @@ draw_panel :: proc(g: ^game.Game) {
 			draw_text(tx, 42, fmt.bprintf(buf[:], "%d lots left today", g.vendor_stock), DIM, 1, false)
 		}
 		if g.sub == .Deliveries || g.sub == .Offer || g.sub == .Carried || g.sub == .Carried_Detail || g.sub == .Vendor || g.sub == .Alley {break}
-		if g.sub == .Fare || g.sub == .Passengers || g.sub == .Passenger || g.sub == .Ship || g.sub == .Ships || g.sub == .Fittings {break}
+		if g.sub == .Fare || g.sub == .Passengers || g.sub == .Passenger || g.sub == .Ship || g.sub == .Ships || g.sub == .Fittings || g.sub == .Cargo {break}
 		if g.sub == .Market || g.sub == .Trade {
 			draw_text(tx, 14, fmt.bprintf(buf[:], "Money %d", g.money), GOLD, 1, false)
 			draw_text(tx, 28, fmt.bprintf(buf[:], "Hold %d of %d tons", game.hold_used(g), game.hold_tons(g)), WHITE, 1, false)
@@ -778,7 +820,10 @@ draw_panel :: proc(g: ^game.Game) {
 			break
 		}
 		draw_text(tx, 14, fmt.bprintf(buf[:], "Turn %d of %d", g.turn, game.TURN_LIMIT), WHITE, 1, false)
-		if g.sub == .Logbook {
+		if g.sub == .Cargo {
+			draw_text(tx, 28, "The cargo", GOLD, 1, false)
+			draw_text(tx, 42, fmt.bprintf(buf[:], "Money %d", g.money), DIM, 1, false)
+		} else if g.sub == .Logbook {
 			draw_text(tx, 28, "The captain's log", GOLD, 1, false)
 			draw_text(tx, 42, fmt.bprintf(buf[:], "%d entr%s", g.n_logbook, g.n_logbook == 1 ? "y" : "ies"), DIM, 1, false)
 		} else if g.sub == .Book {

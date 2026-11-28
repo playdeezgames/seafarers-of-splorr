@@ -1794,10 +1794,18 @@ the_ship_menu_and_the_shipyard :: proc(t: ^testing.T) {
 	testing.expect(t, found >= 0)
 	choose(g, found)
 	m = menu(g)
-	testing.expect_value(t, m.items[0].cmd, Cmd.Careen)
-	testing.expect_value(t, m.n, 5) // two careens, Ships, Fittings, Back (no repair: the hull is sound)
+	testing.expect(t, m.items[0].cmd == .Open && m.items[0].arg == int(Sub.Careen))
+	testing.expect_value(t, m.n, 5) // Careen, Ships, Fittings, Cargo, Back (no repair: the hull is sound)
 	g.districts[0] = {}
-	testing.expect_value(t, menu(g).n, 3) // careening only, without a shipyard
+	testing.expect_value(t, menu(g).n, 3) // Careen and Cargo, without a shipyard
+	// Careening has its own submenu, which goes back to the ship menu.
+	choose(g, 0)
+	testing.expect_value(t, g.sub, Sub.Careen)
+	m = menu(g)
+	testing.expect_value(t, m.n, 3) // port side, starboard, Back
+	testing.expect(t, m.items[0].cmd == .Careen && m.items[1].cmd == .Careen)
+	do_cmd(g, .Back, 0)
+	testing.expect_value(t, g.sub, Sub.Ship)
 }
 
 @(test)
@@ -1851,7 +1859,7 @@ repairs_and_sinking :: proc(t: ^testing.T) {
 	testing.expect_value(t, g.hull, 70)
 	testing.expect_value(t, repair_cost(g), 60)
 	do_cmd(g, .Open, int(Sub.Ship))
-	testing.expect_value(t, menu(g).items[2].cmd, Cmd.Repair)
+	testing.expect_value(t, menu(g).items[1].cmd, Cmd.Repair)
 	g.money = 21 // mends what it can pay for
 	do_cmd(g, .Repair, 0)
 	testing.expect_value(t, g.hull, 80)

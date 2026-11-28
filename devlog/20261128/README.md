@@ -50,3 +50,10 @@ Not posted. A working record.
   "Sailed from", so on a long voyage early deaths could vanish under landfalls and sales. Now the oldest routine entry
   (landfall, delivery, alley win, sale, fares) goes first, and deaths, desertions, hirings, pay-offs, fights and ships
   stay. Every way a crew member leaves the ship (killed in a fight, starved, unpaid, hungry, paid off) writes an entry.
+- **Seeing the cargo** (the user's request; they chose all three): a **Cargo** panel, from the chart at sea and the
+  ship menu in port (both top menus are full at nine), lists each good aboard with its count, tons and worth at base
+  price, sea goods in gold, then rations and the total. The market draws the same list over the sea, and its list
+  shows how many you carry beside each good's prices ("Salt fish 10/9 (10)") when the label fits, and rations held.
+- **Careening in a submenu** (the user's request): the ship menu's two careen lines were too long to fit; now one
+  "Careen, 87% clean" item (the dirtier side) opens Port side / Starboard, and careening or Back returns to the ship
+  menu.

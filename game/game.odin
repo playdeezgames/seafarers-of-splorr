@@ -60,6 +60,7 @@ Sub :: enum u8 {
 	Encounter, // something met at sea (g.foe)
 	Sea_Goods, // docked: selling whale oil, pearls and coral
 	Orders, // the crew's jobs: fishing and hunting rats
+	Cargo, // what is in the hold (the user's request, November 28, 2026): from the chart at sea, the ship in port
 }
 
 // Keyboard and gamepad commands; order matches ACTION in web/index.html.
@@ -348,11 +349,18 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 			i := g.docked
 			for good in Good {
 				if good in g.trades[i] {
-					addf(g, &m, .Pick_Good, int(good), "%s %d/%d", GOODS[good].name, your_cost(g, i, good), your_take(g, i, good))
+					// With how many you carry, when it fits (the user's request, November 28, 2026).
+					tmp: [64]u8
+					cost, take, have := your_cost(g, i, good), your_take(g, i, good), g.cargo[good]
+					if have > 0 && len(fmt.bprintf(tmp[:], "%s %d/%d (%d)", GOODS[good].name, cost, take, have)) < MENU_TEXT {
+						addf(g, &m, .Pick_Good, int(good), "%s %d/%d (%d)", GOODS[good].name, cost, take, have)
+					} else {
+						addf(g, &m, .Pick_Good, int(good), "%s %d/%d", GOODS[good].name, cost, take)
+					}
 				}
 			}
 			if carries_sea_goods(g) {add(g, &m, "Sea goods", .Open, int(Sub.Sea_Goods))}
-			addf(g, &m, .Pick_Good, RATIONS, "Rations %d", ration_price(g, i))
+			addf(g, &m, .Pick_Good, RATIONS, "Rations %d (%d)", ration_price(g, i), g.rations)
 			add(g, &m, "Back", .Back)
 			return
 		case .Sea_Goods:
@@ -406,7 +414,7 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 		case .Crew, .Member, .Tavern, .Candidate, .Orders:
 			crew_menu(g, &m)
 			return
-		case .Ship, .Ships, .Fittings, .Fare, .Passengers, .Passenger:
+		case .Ship, .Ships, .Fittings, .Fare, .Passengers, .Passenger, .Cargo:
 			ship_menu(g, &m)
 			return
 		case .Vendor:
@@ -484,6 +492,9 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 		case .Chart:
 			add(g, &m, "Price book", .Open, int(Sub.Book))
 			add(g, &m, "Captain's log", .Open, int(Sub.Logbook))
+			add(g, &m, "Cargo", .Open, int(Sub.Cargo))
+			add(g, &m, "Back", .Back)
+		case .Cargo:
 			add(g, &m, "Back", .Back)
 		case .Logbook:
 			if logbook_pages(g) > 1 {addf(g, &m, .Log_Page, 0, "Page %d of %d", g.log_page % logbook_pages(g) + 1, logbook_pages(g))}
@@ -553,13 +564,14 @@ ship_menu :: proc(g: ^Game, m: ^Menu) {
 	nb: [NAME_LEN]u8
 	#partial switch g.sub {
 	case .Ship:
-		put(m, .Careen, int(Side.Port), text(g, m, "Careen port, %d%% clean", hull_clean(g, .Port)))
-		put(m, .Careen, int(Side.Starboard), text(g, m, "Careen starboard, %d%%", hull_clean(g, .Starboard)))
+		// Careening in its own submenu (the user's request, November 28, 2026): the two sides' labels did not fit.
+		put(m, .Open, int(Sub.Careen), text(g, m, "Careen, %d%% clean", min(hull_clean(g, .Port), hull_clean(g, .Starboard))))
 		if at_shipyard(g) {
 			if g.hull < hull_max(g) {put(m, .Repair, 0, text(g, m, "Repair hull, %d", repair_cost(g)))}
 			put(m, .Open, int(Sub.Ships), "Ships")
 			put(m, .Open, int(Sub.Fittings), "Fittings")
 		}
+		put(m, .Open, int(Sub.Cargo), "Cargo")
 	case .Ships:
 		for s in Ship_Type {
 			if s == g.ship_type {
@@ -988,9 +1000,10 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		case .Offer, .Carried: open(g, .Deliveries)
 		case .Carried_Detail: open(g, .Carried)
 		case .Book, .Logbook: open(g, .Chart)
+		case .Cargo: open(g, g.screen == .Docked ? .Ship : .Chart)
 		case .Member, .Orders: open(g, .Crew)
 		case .Candidate: open(g, .Tavern)
-		case .Ships, .Fittings: open(g, .Ship)
+		case .Ships, .Fittings, .Careen: open(g, .Ship)
 		case .Fare: open(g, .Deliveries)
 		case .Passengers: open(g, g.screen == .Docked ? .Deliveries : .Crew)
 		case .Passenger: open(g, .Passengers)
@@ -1088,7 +1101,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		if arg < 0 || arg > int(max(Side)) {return}
 		careen(g, Side(arg))
 		report_spoiled(g)
-		if g.screen != .Over {open(g, .None)}
+		if g.screen != .Over {open(g, .Ship)}
 		g.want_save = true
 	case .Pick_Good:
 		if g.docked == NO_ISLAND {return}
