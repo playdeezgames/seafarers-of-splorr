@@ -4,8 +4,8 @@ A sailing and trading game in the browser: steer by heading and speed across a t
 make deliveries, gamble in the dark alley, and retire at the end of your years with a score. An Odin/wasm port of
 Seafarers of SPLORR!! "Classic" (F#, 2020) with the ideas of the unfinished 2021 C++ game folded in.
 
-**Status:** Phases 0 to 8 built (scaffold, the sea, staying alive, trade, deliveries, the dark alley, crew, the
-shipyard, things at sea) of a thirteen-phase plan (0 to 12). The plan and every design decision live in the SPLORR!! vault
+**Status:** Phases 0 to 9 built (scaffold, the sea, staying alive, trade, deliveries, the dark alley, crew, the
+shipyard, things at sea, weather) of a thirteen-phase plan (0 to 12). The plan and every design decision live in the SPLORR!! vault
 (`splorr/Games/Seafarers of SPLORR!!.md`).
 
 ## Build and run

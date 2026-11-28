@@ -14,34 +14,45 @@ steer :: proc(g: ^Game, i: int) -> (heading: int, run: f32, ok: bool) {
 	@(static) parent: [WORLD_SIZE * WORLD_SIZE]i32
 	@(static) queue: [WORLD_SIZE * WORLD_SIZE]i32
 	NONE :: -1
-	for k in 0 ..< len(parent) {parent[k] = NONE}
 	sx, sy := int(g.ship.x), int(g.ship.y)
 	if sx < 0 || sy < 0 || sx >= WORLD_SIZE || sy >= WORLD_SIZE {return}
 	start := i32(sy * WORLD_SIZE + sx)
-	parent[start] = start
-	head, tail := 0, 0
-	queue[tail] = start
-	tail += 1
 	goal := i32(NONE)
 	DIRS := [8][2]int{{0, -1}, {1, 0}, {0, 1}, {-1, 0}, {1, -1}, {1, 1}, {-1, 1}, {-1, -1}}
-	for head < tail {
-		cur := queue[head]
-		head += 1
-		cx, cy := int(cur) % WORLD_SIZE, int(cur) / WORLD_SIZE
-		if island_distance(g, i, f32(cx) + 0.5, f32(cy) + 0.5) <= 1.01 {
-			goal = cur
-			break
+	// First round the storms in view (Phase 9); if they close every way, straight through them.
+	avoid := false
+	for k in 0 ..< g.n_storms {if g.storms[k].seen && storm_in_view(g, k) {avoid = true}}
+	for pass in 0 ..< 2 {
+		if pass == 1 {
+			if !avoid {break}
+			avoid = false
 		}
-		for d in DIRS {
-			nx, ny := cx + d.x, cy + d.y
-			if nx < 0 || ny < 0 || nx >= WORLD_SIZE || ny >= WORLD_SIZE || is_land(g, nx, ny) {continue}
-			if d.x != 0 && d.y != 0 && (is_land(g, cx + d.x, cy) || is_land(g, cx, cy + d.y)) {continue} // no cutting corners
-			n := i32(ny * WORLD_SIZE + nx)
-			if parent[n] != NONE {continue}
-			parent[n] = cur
-			queue[tail] = n
-			tail += 1
+		for k in 0 ..< len(parent) {parent[k] = NONE}
+		parent[start] = start
+		head, tail := 0, 0
+		queue[tail] = start
+		tail += 1
+		for head < tail {
+			cur := queue[head]
+			head += 1
+			cx, cy := int(cur) % WORLD_SIZE, int(cur) / WORLD_SIZE
+			if island_distance(g, i, f32(cx) + 0.5, f32(cy) + 0.5) <= 1.01 {
+				goal = cur
+				break
+			}
+			for d in DIRS {
+				nx, ny := cx + d.x, cy + d.y
+				if nx < 0 || ny < 0 || nx >= WORLD_SIZE || ny >= WORLD_SIZE || is_land(g, nx, ny) {continue}
+				if d.x != 0 && d.y != 0 && (is_land(g, cx + d.x, cy) || is_land(g, cx, cy + d.y)) {continue} // no cutting corners
+				if avoid && stormy(g, f32(nx) + 0.5, f32(ny) + 0.5) {continue}
+				n := i32(ny * WORLD_SIZE + nx)
+				if parent[n] != NONE {continue}
+				parent[n] = cur
+				queue[tail] = n
+				tail += 1
+			}
 		}
+		if goal != NONE {break}
 	}
 	if goal == NONE {return}
 
@@ -65,7 +76,7 @@ steer :: proc(g: ^Game, i: int) -> (heading: int, run: f32, ok: bool) {
 	} else {
 		for k in 0 ..< n {
 			px, py := f32(int(path[k]) % WORLD_SIZE) + 0.5, f32(int(path[k]) / WORLD_SIZE) + 0.5
-			if clear_line(g, g.ship.x, g.ship.y, px, py) {
+			if clear_line(g, g.ship.x, g.ship.y, px, py, avoid) {
 				tx, ty = px, py
 				break
 			}
@@ -83,7 +94,7 @@ steer :: proc(g: ^Game, i: int) -> (heading: int, run: f32, ok: bool) {
 }
 
 // True when a straight run between two points stays on water (sampled every tenth of a tile, both sides of the line).
-clear_line :: proc(g: ^Game, x0, y0, x1, y1: f32) -> bool {
+clear_line :: proc(g: ^Game, x0, y0, x1, y1: f32, avoid_storms := false) -> bool {
 	dx, dy := x1 - x0, y1 - y0
 	length := math.sqrt(dx * dx + dy * dy)
 	steps := max(1, int(length * 10))
@@ -96,9 +107,22 @@ clear_line :: proc(g: ^Game, x0, y0, x1, y1: f32) -> bool {
 		for side in ([3]f32{0, 1, -1}) {
 			px, py := x + ox * side, y + oy * side
 			if px < 0 || py < 0 || px >= WORLD_SIZE || py >= WORLD_SIZE || is_land(g, int(px), int(py)) {return false}
+			if avoid_storms && stormy(g, px, py) {return false}
 		}
 	}
 	return true
+}
+
+// True when a point is in or close to a storm the ship can see: a course keeps clear of these.
+stormy :: proc(g: ^Game, x, y: f32) -> bool {
+	for k in 0 ..< g.n_storms {
+		st := g.storms[k]
+		if !st.seen || !storm_in_view(g, k) {continue}
+		dx, dy := x - st.x, y - st.y
+		reach := st.radius + 0.75
+		if dx * dx + dy * dy <= reach * reach {return true}
+	}
+	return false
 }
 
 // True when the course's island is in docking range.

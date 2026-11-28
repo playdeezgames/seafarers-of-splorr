@@ -59,6 +59,7 @@ Sub :: enum u8 {
 	Passenger, // one passenger aboard (g.pick)
 	Encounter, // something met at sea (g.foe)
 	Sea_Goods, // docked: selling whale oil, pearls and coral
+	Orders, // the crew's jobs: fishing and hunting rats
 }
 
 // Keyboard and gamepad commands; order matches ACTION in web/index.html.
@@ -84,6 +85,7 @@ Sound :: enum u8 {
 	Bust,
 	Bell,
 	Clash, // a round of blows
+	Storm, // a turn in a storm
 }
 
 Cmd :: enum u8 {
@@ -138,6 +140,7 @@ Cmd :: enum u8 {
 	Mer_Trade, // arg 1 opens the merfolk's wares, 0 closes them
 	Mer_Buy, // arg: Good
 	Mer_Sell,
+	Hunt_Rats,
 }
 
 HEAD_FOR_PAGE :: MENU_MAX - 2 // islands a page when they do not all fit: leaves room for More and Back
@@ -227,6 +230,14 @@ Game :: struct {
 	passengers: [CABINS_MAX]Passenger,
 	n_passengers: int,
 	foe:        Encounter,
+	weather:    Rng, // the weather's own generator (Phase 9)
+	wind_dir:   int, // degrees the wind blows from
+	wind_force: Wind_Force,
+	storms:     [STORMS_MAX]Storm,
+	n_storms:   int,
+	rats:       int,
+	spoiled:    int, // cargo the rats have spoiled since the last report (not saved)
+	weather_off: bool, // tests: no wind, storms or rats
 	muted:      bool, // mirrors the page's mute setting, for the menu label
 	// Requests to the web layer, cleared by it.
 	want_save:  bool,
@@ -276,6 +287,7 @@ start_world :: proc(g: ^Game, seed: u64) {
 	g.hull = hull_max(g)
 	g.n_fare_offers, g.n_passengers = 0, 0
 	g.foe = {}
+	start_weather(g)
 	g.n_candidates, g.n_logbook, g.wage_turns, g.log_page = 0, 0, 0, 0
 	if g.n_islands > 0 {
 		if x, y, ok := mooring(g, 0); ok {
@@ -406,7 +418,7 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 				add(g, &m, "Back", .Back)
 			}
 			return
-		case .Crew, .Member, .Tavern, .Candidate:
+		case .Crew, .Member, .Tavern, .Candidate, .Orders:
 			crew_menu(g, &m)
 			return
 		case .Ship, .Ships, .Fittings, .Fare, .Passengers, .Passenger:
@@ -489,7 +501,7 @@ menu :: proc(g: ^Game) -> (m: Menu) {
 		case .Logbook:
 			if logbook_pages(g) > 1 {addf(g, &m, .Log_Page, 0, "Page %d of %d", g.log_page % logbook_pages(g) + 1, logbook_pages(g))}
 			add(g, &m, "Back", .Back)
-		case .Crew, .Member, .Tavern, .Candidate:
+		case .Crew, .Member, .Tavern, .Candidate, .Orders:
 			crew_menu(g, &m)
 		case .Passengers, .Passenger:
 			ship_menu(g, &m)
@@ -524,7 +536,10 @@ crew_menu :: proc(g: ^Game, m: ^Menu) {
 			label := k == 0 ? fmt.bprintf(g.menu_text[m.n][:], "Capt. %s", name) : fmt.bprintf(g.menu_text[m.n][:], "%s, %s", name, PROFESSION_NAMES[c.profession])
 			put(g, m, .Pick_Member, k, label)
 		}
+		if g.screen == .Sea || g.rats > 0 {put(g, m, .Open, int(Sub.Orders), "Orders")}
+	case .Orders:
 		if g.screen == .Sea {put(g, m, .Fish, 0, fmt.bprintf(g.menu_text[m.n][:], "Fish (%d turns)", FISH_TURNS))}
+		if g.rats > 0 {put(g, m, .Hunt_Rats, 0, fmt.bprintf(g.menu_text[m.n][:], "Hunt rats (%d turns)", HUNT_TURNS))}
 	case .Member:
 		if g.screen == .Docked && g.pick >= 1 && g.pick < g.n_crew {put(g, m, .Dismiss, 0, "Pay off and dismiss")}
 	case .Tavern:
@@ -714,7 +729,7 @@ open :: proc(g: ^Game, s: Sub) {
 	if s == .Head_For && g.sub != .Head_For {g.page = 0}
 	if s == .Logbook && g.sub != .Logbook {g.log_page = 0}
 	if s == .Custom && g.sub != .Custom {g.spent = {}}
-	g.sub = s
+	g.sub = s == .Sea_Goods && !carries_sea_goods(g) ? .Market : s // nothing left to sell: back to the market
 	g.cursor = 0
 }
 
@@ -772,8 +787,9 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		open(g, .Crew)
 		g.want_save = true
 	case .Fish:
-		if g.screen != .Sea || g.sub != .Crew {return}
+		if g.screen != .Sea || g.sub != .Orders {return}
 		n := fish(g)
+		report_spoiled(g)
 		if g.screen == .Sea {
 			if n > 0 {
 				logf(g, "Caught %d rations.", n)
@@ -782,6 +798,21 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 			}
 			sound(g, .Bell)
 		}
+		g.want_save = true
+	case .Hunt_Rats:
+		if g.sub != .Orders || g.rats == 0 {return}
+		n := hunt_rats(g)
+		if g.screen == .Over {return}
+		if g.rats == 0 {
+			logf(g, "Killed %d: no rats left.", n)
+			open(g, .Crew)
+		} else if n > 0 {
+			logf(g, "Killed %d rats; %d left.", n, g.rats)
+		} else {
+			logf(g, "The rats get away.")
+		}
+		report_spoiled(g)
+		sound(g, .Bell)
 		g.want_save = true
 	case .Pick_Candidate:
 		if g.screen != .Docked || arg < 0 || arg >= g.n_candidates {return}
@@ -935,7 +966,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		case .Offer, .Carried: open(g, .Deliveries)
 		case .Carried_Detail: open(g, .Carried)
 		case .Book, .Logbook: open(g, .Chart)
-		case .Member: open(g, .Crew)
+		case .Member, .Orders: open(g, .Crew)
 		case .Candidate: open(g, .Tavern)
 		case .Ships, .Fittings: open(g, .Ship)
 		case .Fare: open(g, .Deliveries)
@@ -1024,6 +1055,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 			note(g, .Passage, target, fares)
 		}
 		if w := settle_crew(g); w > 0 {logf(g, "Wages paid: %d.", w)}
+		if rats_board(g) > 0 {logf(g, "Rats come aboard!")}
 		make_offers(g)
 		make_candidates(g)
 		make_fare_offers(g)
@@ -1033,6 +1065,7 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 	case .Careen:
 		if arg < 0 || arg > int(max(Side)) {return}
 		careen(g, Side(arg))
+		report_spoiled(g)
 		if g.screen != .Over {open(g, .None)}
 		g.want_save = true
 	case .Pick_Good:
@@ -1070,6 +1103,8 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 			if takings >= BIG_SALE {note(g, .Sold, g.docked, takings)}
 			record_prices(g)
 			g.want_save = true
+			// Sold the last of a sea good: back to the sea goods, or the market when there are none left.
+			if is_sea_good(Good(g.trade_good)) && g.cargo[Good(g.trade_good)] == 0 {open(g, .Sea_Goods)}
 		} else {
 			sound(g, .Deny)
 			logf(g, "None aboard to sell.")
@@ -1156,6 +1191,13 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 	}
 }
 
+// Tells of cargo the rats spoiled since the last report.
+report_spoiled :: proc(g: ^Game) {
+	if g.spoiled == 0 || g.screen == .Over {return}
+	logf(g, "Rats spoiled %d cargo.", g.spoiled)
+	g.spoiled = 0
+}
+
 drop_course :: proc(g: ^Game) {
 	if g.course != NO_ISLAND {
 		logf(g, "Course for %s dropped.", island_name(g, g.course))
@@ -1167,8 +1209,10 @@ drop_course :: proc(g: ^Game) {
 // on sighting a new island. At all stop the turns simply pass. On a course the ship steers itself each turn, keeps
 // going past sightings, and stops alongside its island.
 sail :: proc(g: ^Game, turns: int) {
+	defer report_spoiled(g)
 	for t in 0 ..< turns {
 		if g.screen != .Sea {return}
+		was_in_storm := in_storm(g)
 		step := effective_speed(g) / 100
 		if g.course != NO_ISLAND && g.ship.speed > 0 {
 			h, run, ok := steer(g, g.course)
@@ -1200,6 +1244,15 @@ sail :: proc(g: ^Game, turns: int) {
 			sound(g, .Sighted)
 			logf(g, "Sighted %s!", island_name(g, s))
 			if g.course == NO_ISLAND {return}
+		}
+		if k := look_storms(g); k >= 0 {
+			sound(g, .Sighted)
+			logf(g, "A storm to the %s!", compass(storm_bearing(g, k)))
+			if g.course == NO_ISLAND {return}
+		}
+		if !was_in_storm && in_storm(g) {
+			logf(g, "Into the storm!")
+			return
 		}
 		if g.course != NO_ISLAND && arrived(g) {
 			sound(g, .Bell)

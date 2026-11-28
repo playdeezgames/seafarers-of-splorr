@@ -130,7 +130,7 @@ commodity_price :: proc(m: ^Market, c: Commodity) -> f32 {
 // What the island asks for one of the good.
 sell_price :: proc(g: ^Game, i: int, good: Good) -> int {
 	p: f32
-	for c in Commodity {p += f32(GOODS[good].recipe[c]) * commodity_price(&g.markets[i], c)}
+	for c in Commodity {p += f32(GOODS[good].recipe[c]) * commodity_price(&g.markets[i], c) * season_price(g, c)}
 	return max(1, int(math.round(p)))
 }
 
@@ -141,7 +141,13 @@ buy_price :: proc(g: ^Game, i: int, good: Good) -> int {
 
 // A lot of ten rations costs two grain.
 ration_price :: proc(g: ^Game, i: int) -> int {
-	return max(1, int(math.round(2 * commodity_price(&g.markets[i], .Grain))))
+	return max(1, int(math.round(2 * commodity_price(&g.markets[i], .Grain) * season_price(g, .Grain))))
+}
+
+// The season's effect on a commodity's price, as a factor (Phase 9).
+season_price :: proc(g: ^Game, c: Commodity) -> f32 {
+	if g.weather_off {return 1}
+	return f32(SEASON_PRICE[season(g.turn)][c]) / 100
 }
 
 // The good's worth away from any market: its commodities at base price.

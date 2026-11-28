@@ -6,6 +6,15 @@ import "core:math"
 // world is rebuilt from the seed, so a new generator makes an old save describe a different sea). An older version is
 // refused with Load_Error.Version and the page says so.
 //
+// Version 11 (Phase 9, weather) is version 10 followed by:
+//  u64         the weather's generator
+//  u16         the direction the wind blows from (degrees)
+//  u8          the wind's force
+//  u8, 6 x s   storms: count, then six slots
+//  u16         rats aboard
+// A storm is 12 bytes: x f32, y f32, radius in tenths of a tile u8, turns left u16, seen u8.
+// Older versions load with the voyage's first weather, no storms and no rats.
+//
 // Version 10 (Phase 8, things at sea) is version 9 followed by:
 //  u8 x 4      the encounter: kind (0 for none), state, health, health at the start
 //  u16         your fighters' health when it began
@@ -73,7 +82,7 @@ import "core:math"
 // 34  u8     speed (percent)
 // 35  u8     docked island, 255 at sea
 // 36  u64    charted islands, bit i for island i
-SAVE_VERSION :: 10
+SAVE_VERSION :: 11
 SAVE_V4_SIZE :: 82 + ISLAND_MAX * len(Commodity) * 4
 SAVE_V5_SIZE :: SAVE_V4_SIZE + 2 * (1 + 12 * 3) + 1 + 2
 SAVE_V6_SIZE :: SAVE_V5_SIZE + ISLAND_MAX * (2 + 2 * LAND_GOODS)
@@ -84,7 +93,9 @@ SAVE_V8_SIZE :: SAVE_V7_SIZE + 1
 PASSENGER_BYTES :: 10
 SAVE_V9_SIZE :: SAVE_V8_SIZE + 1 + len(Fitting) + 2 + 1 + FARE_OFFERS_MAX * PASSENGER_BYTES + 1 + CABINS_MAX * PASSENGER_BYTES
 SEA_GOODS :: len(Good) - LAND_GOODS
-SAVE_SIZE :: SAVE_V9_SIZE + 4 + 2 + 1 + 2 * SEA_GOODS
+SAVE_V10_SIZE :: SAVE_V9_SIZE + 4 + 2 + 1 + 2 * SEA_GOODS
+STORM_BYTES :: 12
+SAVE_SIZE :: SAVE_V10_SIZE + 8 + 2 + 1 + 1 + STORMS_MAX * STORM_BYTES + 2
 NOT_SEEN :: 0xFFFF
 PRICE_MAX :: 60_000
 SAVE_V3_SIZE :: 58
@@ -175,6 +186,22 @@ save_encode :: proc(g: ^Game, buf: ^[SAVE_SIZE]u8) {
 	put_u16(buf[at10 + 4:], u16(f.strength))
 	buf[at10 + 6] = (f.parleyed ? 1 : 0) | (f.friendly ? 2 : 0) | (f.hostile ? 4 : 0)
 	for k in 0 ..< SEA_GOODS {put_u16(buf[at10 + 7 + 2 * k:], u16(g.cargo[Good(LAND_GOODS + k)]))}
+	at11 := SAVE_V10_SIZE
+	put_u64(buf[at11:], g.weather.state)
+	put_u16(buf[at11 + 8:], u16(g.wind_dir))
+	buf[at11 + 10] = u8(g.wind_force)
+	buf[at11 + 11] = u8(g.n_storms)
+	at11 += 12
+	for k in 0 ..< g.n_storms {
+		st := g.storms[k]
+		o := buf[at11 + STORM_BYTES * k:]
+		put_u32(o, transmute(u32)st.x)
+		put_u32(o[4:], transmute(u32)st.y)
+		o[8] = u8(math.round(st.radius * 10))
+		put_u16(o[9:], u16(st.turns))
+		o[11] = st.seen ? 1 : 0
+	}
+	put_u16(buf[at11 + STORMS_MAX * STORM_BYTES:], u16(g.rats))
 	at := 82
 	for i in 0 ..< ISLAND_MAX {
 		for c in Commodity {
@@ -191,7 +218,7 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 	if data[0] != 'S' || data[1] != 'O' || data[2] != 'S' {return .Magic}
 	version := data[3]
 	if version < 2 || version > SAVE_VERSION {return .Version} // before the size: versions differ in size
-	sizes := [11]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_V4_SIZE, SAVE_V5_SIZE, SAVE_V6_SIZE, SAVE_V7_SIZE, SAVE_V8_SIZE, SAVE_V9_SIZE, SAVE_SIZE}
+	sizes := [12]int{0, 0, SAVE_V2_SIZE, SAVE_V3_SIZE, SAVE_V4_SIZE, SAVE_V5_SIZE, SAVE_V6_SIZE, SAVE_V7_SIZE, SAVE_V8_SIZE, SAVE_V9_SIZE, SAVE_V10_SIZE, SAVE_SIZE}
 	if len(data) != sizes[version] {return .Size}
 	turn := get_u32(data[20:])
 	turn_saved := turn
@@ -381,6 +408,29 @@ save_decode :: proc(g: ^Game, data: []u8) -> Load_Error {
 			if n > CARGO_MAX {return .Range}
 			t.cargo[Good(LAND_GOODS + k)] = n
 		}
+	}
+	if version >= 11 {
+		at := SAVE_V10_SIZE
+		t.weather.state = get_u64(data[at:])
+		t.wind_dir = int(get_u16(data[at + 8:]))
+		if t.wind_dir >= 360 || data[at + 10] > u8(max(Wind_Force)) || data[at + 11] > STORMS_MAX {return .Range}
+		t.wind_force = Wind_Force(data[at + 10])
+		t.n_storms = int(data[at + 11])
+		at += 12
+		for k in 0 ..< t.n_storms {
+			o := data[at + STORM_BYTES * k:]
+			st := Storm {
+				x      = transmute(f32)get_u32(o),
+				y      = transmute(f32)get_u32(o[4:]),
+				radius = f32(o[8]) / 10,
+				turns  = int(get_u16(o[9:])),
+				seen   = o[11] == 1,
+			}
+			if !in_world(st.x) || !in_world(st.y) || o[8] < 15 || o[8] > 40 || st.turns < 1 || st.turns > 150 || o[11] > 1 {return .Range}
+			t.storms[k] = st
+		}
+		t.rats = int(get_u16(data[at + STORMS_MAX * STORM_BYTES:]))
+		if t.rats > RATS_MAX {return .Range}
 	}
 	if hold_used(t) > hold_tons(t) {return .Range} // after the ship and the cargo are both read
 	t.rng.state = get_u64(data[12:])

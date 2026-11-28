@@ -21,8 +21,8 @@
   Keys: arrows or W/S, Enter, Esc, 1 to 9, M to mute.<br>
   <span class="ll-only" hidden><a href="#" id="feedback-link">Send feedback</a> · </span><a href="https://thegrumpygamedev.itch.io/">itch.io</a> · <a href="https://playdeezgames.github.io/oeuvre-of-splorr/">more games</a>
 </footer>
-<script type="text/javascript" src="odin.js?v=e2f6f12-1795813925"></script>
-<script src="lootlocker.js?v=e2f6f12-1795813925"></script>
+<script type="text/javascript" src="odin.js?v=44964c7-1795861064"></script>
+<script src="lootlocker.js?v=44964c7-1795861064"></script>
 <script>
   // Feedback through the shared SPLORR!! LootLocker kit (splorr/Tech/LootLocker.md in the vault). This game has no
   // LootLocker game yet: until domain and key are filled in and the console has Game feedback categories, the
@@ -60,12 +60,12 @@
   fit();
 
   const tiles = new Image();
-  tiles.src = "natural.png?v=e2f6f12-1795813925"; // Bountiful Bits Natural, coloured, no background: 10 by 10 tiles, no gaps
+  tiles.src = "natural.png?v=44964c7-1795861064"; // Bountiful Bits Natural, coloured, no background: 10 by 10 tiles, no gaps
 
   // Bitmap font: m6x11, ASCII 32..126 in a 16x6 grid of 10x14 cells, 11 rows above the baseline.
   const FONT_W = 10, FONT_H = 14, FONT_BASE = 11;
   const font = new Image();
-  font.src = "font.png?v=e2f6f12-1795813925";
+  font.src = "font.png?v=44964c7-1795861064";
   const fontAdvance = [];
   const fontTinted = new Map();
   font.onload = () => {
@@ -166,6 +166,7 @@
     { wave: "square", notes: [[330, 0.1], [196, 0.18]] },                  // Bust
     { wave: "sine", notes: [[1175, 0.6]] },                                // Bell
     { wave: "sawtooth", notes: [[110, 0.04], [0, 0.02], [98, 0.05], [0, 0.02], [131, 0.06]] }, // Clash
+    { wave: "sawtooth", notes: [[55, 0.12], [49, 0.1], [62, 0.16]] },   // Storm
   ];
   let muted = store.get(MUTE_KEY) === "1";
   let audio = null;
@@ -257,8 +258,8 @@
   };
   requestAnimationFrame(pollPad);
 
-  // e2f6f12-1795813925 is stamped by tools/build.sh so a new build is never mixed with cached old files.
-  odin.runWasm("game.wasm?v=e2f6f12-1795813925", null, {
+  // 44964c7-1795861064 is stamped by tools/build.sh so a new build is never mixed with cached old files.
+  odin.runWasm("game.wasm?v=44964c7-1795861064", null, {
     canvas: {
       fill_rect: (x, y, w, h, rgb, alpha) => {
         ctx.globalAlpha = alpha; ctx.fillStyle = css(rgb); ctx.fillRect(x, y, w, h); ctx.globalAlpha = 1;

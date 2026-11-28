@@ -52,6 +52,8 @@ INK_DIM :: 0x7a6a50
 LATE :: 0xa02a1a
 RED :: 0xe0533a
 LAND :: 0xb4532a
+STORM :: 0x2a2e3a
+RAIN :: 0xa8b8d0
 
 ctx: runtime.Context
 state: game.Game
@@ -246,7 +248,15 @@ draw_sea :: proc(g: ^game.Game) {
 				if mask == 15 && h % 3 == 0 {draw_tile(i32(22 + h / 3 % 6), 1, px, py)} // a tree
 			}
 			dx, dy := f32(tx) + 0.5 - g.ship.x, f32(ty) + 0.5 - g.ship.y
-			if dx * dx + dy * dy > view * view {fill_rect(px, py, T, T, DEEP, 0.4)}
+			if dx * dx + dy * dy > view * view {
+				fill_rect(px, py, T, T, DEEP, 0.4)
+			} else if game.storm_at(g, f32(tx) + 0.5, f32(ty) + 0.5) >= 0 {
+				// A storm in view: dark cloud and rain that shifts each turn.
+				fill_rect(px, py, T, T, STORM, 0.6)
+				r := tile_hash(tx + g.turn * 7, ty - g.turn * 3)
+				fill_rect(px + f32(r % 9), py + f32(r / 9 % 7), 1, 3, RAIN, 0.7)
+				if r % 3 == 0 {fill_rect(px + f32(r / 63 % 9), py + f32(r / 7 % 6), 1, 3, RAIN, 0.5)}
+			}
 		}
 	}
 	draw_ship(half * T, half * T, f32(g.ship.heading))
@@ -260,6 +270,16 @@ draw_chart :: proc(g: ^game.Game) {
 		for tx in 0 ..< game.WORLD_SIZE {
 			if i := game.land_at(g, tx, ty); i != game.NO_ISLAND && g.islands[i].charted {
 				fill_rect(f32(tx) * S, f32(ty) * S, S, S, game.is_destination(g, i) ? GOLD : LAND, 1)
+			}
+		}
+	}
+	// Storms in view.
+	for k in 0 ..< g.n_storms {
+		if !game.storm_in_view(g, k) {continue}
+		st := g.storms[k]
+		for ty in int(st.y - st.radius) ..= int(st.y + st.radius) {
+			for tx in int(st.x - st.radius) ..= int(st.x + st.radius) {
+				if game.storm_at(g, f32(tx) + 0.5, f32(ty) + 0.5) == k {fill_rect(f32(tx) * S, f32(ty) * S, S, S, STORM, 0.7)}
 			}
 		}
 	}
@@ -397,7 +417,10 @@ draw_letter :: proc(g: ^game.Game) {
 
 // Ship's condition along the top of the sea view.
 draw_hud :: proc(g: ^game.Game) {
-	fill_rect(0, 0, game.PANEL_X, 45, DEEP, 0.7)
+	// The fourth line (Phase 9) only when nothing is drawn over the sea view below the HUD.
+	OVERLAID :: bit_set[game.Sub]{.Offer, .Carried_Detail, .Crew, .Member, .Candidate, .Encounter, .Ships, .Fittings, .Fare, .Passenger, .Trade}
+	full := g.sub not_in OVERLAID
+	fill_rect(0, 0, game.PANEL_X, full ? 59 : 45, DEEP, 0.7)
 	buf: [48]u8
 	food: u32 = g.rations == 0 ? RED : (g.rations < 100 ? GOLD : WHITE)
 	draw_text(4, 12, fmt.bprintf(buf[:], "Food %d", g.rations), food, 1, false)
@@ -411,6 +434,12 @@ draw_hud :: proc(g: ^game.Game) {
 	used := game.hold_used(g)
 	draw_text(110, 40, fmt.bprintf(buf[:], "Hold %d/%d", used, game.hold_tons(g)), used >= game.hold_tons(g) ? GOLD : WHITE, 1, false)
 	draw_text(180, 40, fmt.bprintf(buf[:], "Crew %d", g.n_crew), WHITE, 1, false)
+	// Phase 9: the date and season, the wind, and any rats.
+	if !full {return}
+	s := game.season(g.turn)
+	draw_text(4, 54, fmt.bprintf(buf[:], "%d %s %s", game.day_of_month(g.turn), game.MONTH_NAMES[game.month(g.turn)], game.SEASON_NAMES[s]), s == .Autumn || s == .Winter ? GOLD : DIM, 1, false)
+	draw_text(98, 54, fmt.bprintf(buf[:], "Wind %s %s", game.compass(g.wind_dir), game.WIND_NAMES[g.wind_force]), g.wind_force == .Strong ? GOLD : WHITE, 1, false)
+	if g.rats > 0 {draw_text(192, 54, fmt.bprintf(buf[:], "Rats %d", g.rats), g.rats >= 50 ? RED : GOLD, 1, false)}
 }
 
 // One person's skills over the sea view.
@@ -653,6 +682,11 @@ crew_panel :: proc(g: ^game.Game, tx: f32) -> bool {
 		draw_text(tx, 28, fmt.bprintf(buf[:], "%d of %d aboard", g.n_crew, game.CREW_MAX), WHITE, 1, false)
 		draw_text(tx, 42, fmt.bprintf(buf[:], "Wages %d per %d turns", game.wages(g), game.WAGE_PERIOD), DIM, 1, false)
 		return true
+	case .Orders:
+		draw_text(tx, 14, "Orders", GOLD, 1, false)
+		draw_text(tx, 28, fmt.bprintf(buf[:], "Rations %d", g.rations), WHITE, 1, false)
+		draw_text(tx, 42, g.rats > 0 ? fmt.bprintf(buf[:], "Rats aboard: %d", g.rats) : "No rats aboard", g.rats > 0 ? RED : DIM, 1, false)
+		return true
 	case .Tavern, .Candidate:
 		draw_text(tx, 14, "Tavern", GOLD, 1, false)
 		draw_text(tx, 28, fmt.bprintf(buf[:], "Crew %d of %d", g.n_crew, game.CREW_MAX), WHITE, 1, false)
@@ -757,7 +791,7 @@ draw_panel :: proc(g: ^game.Game) {
 				draw_text(tx, 28, fmt.bprintf(buf[:], "Heading %03d %s", g.ship.heading, game.compass(g.ship.heading)), WHITE, 1, false)
 			}
 			eff := int(game.effective_speed(g) + 0.5)
-			speed := g.ship.speed == 0 ? "All stop" : (eff < g.ship.speed ? fmt.bprintf(buf[:], "Speed %d%% (%d)", g.ship.speed, eff) : fmt.bprintf(buf[:], "Speed %d%%", g.ship.speed))
+			speed := g.ship.speed == 0 ? "All stop" : (eff != g.ship.speed ? fmt.bprintf(buf[:], "Speed %d%% (%d)", g.ship.speed, eff) : fmt.bprintf(buf[:], "Speed %d%%", g.ship.speed))
 			draw_text(tx, 42, speed, WHITE, 1, false)
 		}
 	}

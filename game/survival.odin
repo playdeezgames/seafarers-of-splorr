@@ -23,10 +23,10 @@ Outcome :: enum u8 {
 	Killed, // the captain fell in a fight
 }
 
-// The ship's speed after fouling, in percent of full sail.
+// The ship's speed after fouling, skill, the ship and the wind, in percent of full sail.
 effective_speed :: proc(g: ^Game) -> f32 {
 	foul := f32(g.foul[.Port] + g.foul[.Starboard]) / 10000
-	return f32(g.ship.speed) * (1 - foul) * speed_factor(g) * ship_speed(g)
+	return f32(g.ship.speed) * (1 - foul) * speed_factor(g) * ship_speed(g) * wind_factor(g)
 }
 
 // How clean one side of the hull is, 0 ..= 100 percent.
@@ -34,7 +34,8 @@ hull_clean :: proc(g: ^Game, s: Side) -> int {
 	return 100 - g.foul[s] * 100 / FOUL_MAX
 }
 
-// One turn passes: everyone aboard eats a ration, the hull fouls if under way, wages mount, and the voyage may end.
+// One turn passes: everyone aboard eats a ration, the hull fouls if under way, wages mount, the weather turns (and a
+// storm may batter the ship), and the voyage may end.
 // Returns false when it ended.
 tick :: proc(g: ^Game, under_way: bool) -> bool {
 	eaters := max(g.n_crew, 1) + g.n_passengers
@@ -53,11 +54,18 @@ tick :: proc(g: ^Game, under_way: bool) -> bool {
 		crew_recover(g)
 	}
 	drift_markets(g)
+	weather_turn(g)
 	if under_way {
 		for s in Side {g.foul[s] = min(g.foul[s] + foul_per_turn(g), FOUL_MAX)}
 	}
 	g.wage_turns = min(g.wage_turns + 1, TURN_LIMIT)
 	g.turn += 1
+	if in_storm(g) {
+		n := storm_hit(g)
+		if g.screen == .Over {return false}
+		sound(g, .Storm)
+		logf(g, "Storm! Hull -%d.", n)
+	}
 	if g.rations == 0 && g.satiety == 0 && g.health > 0 && g.health % 20 == 0 {
 		logf(g, "Starving! Health %d.", g.health)
 	} else if g.rations == 0 && g.satiety == 50 {

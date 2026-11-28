@@ -1224,6 +1224,7 @@ charted_nearest :: proc(g: ^Game) -> int {
 voyage :: proc(g: ^Game) {
 	do_cmd(g, .New_Voyage, 0)
 	begin_voyage(g, .Custom, BASE_SKILL, false)
+	g.weather_off = true // no wind, storms or rats unless a test turns them on (Phase 9)
 }
 
 // Phase 6: crew and professions.
@@ -1404,7 +1405,7 @@ hiring_and_dismissing :: proc(t: ^testing.T) {
 	testing.expect_value(t, g.n_candidates, 0) // they stay at the tavern
 	testing.expect(t, !dismiss(g, 1))
 	do_cmd(g, .Open, int(Sub.Crew))
-	testing.expect_value(t, menu(g).n, CREW_MAX + 1) // six aboard, Fish, Back
+	testing.expect_value(t, menu(g).n, CREW_MAX + 1) // six aboard, Orders, Back
 	do_cmd(g, .Pick_Member, 1)
 	testing.expect_value(t, menu(g).n, 1) // just Back
 }
@@ -1447,6 +1448,7 @@ fishing_feeds_the_crew :: proc(t: ^testing.T) {
 	g.satiety = 50
 	turn := g.turn
 	do_cmd(g, .Open, int(Sub.Crew))
+	do_cmd(g, .Open, int(Sub.Orders))
 	do_cmd(g, .Fish, 0)
 	testing.expect_value(t, g.turn, turn + FISH_TURNS)
 	testing.expect(t, g.rations > 0) // every cast lands something
@@ -2096,6 +2098,7 @@ sea_goods_sell_in_any_port :: proc(t: ^testing.T) {
 	voyage(g)
 	testing.expect(t, .Pearls not_in g.trades[0])
 	g.cargo[.Pearls] = 3
+	g.cargo[.Coral] = 1
 	do_cmd(g, .Open, int(Sub.Market))
 	m := menu(g)
 	found := false
@@ -2111,6 +2114,14 @@ sea_goods_sell_in_any_port :: proc(t: ^testing.T) {
 	do_cmd(g, .Sell, ALL)
 	testing.expect_value(t, g.cargo[.Pearls], 0)
 	testing.expect(t, g.money > money)
+	testing.expect_value(t, g.sub, Sub.Sea_Goods) // sold out: back to the list
+	testing.expect_value(t, menu(g).n, 2) // coral, Back
+	do_cmd(g, .Pick_Good, int(Good.Coral))
+	do_cmd(g, .Sell, 1)
+	testing.expect_value(t, g.sub, Sub.Market) // none left at all: back to the market
+	for k in 0 ..< menu(g).n {testing.expect(t, menu(g).items[k].arg != int(Sub.Sea_Goods) || menu(g).items[k].cmd != .Open)}
+	do_cmd(g, .Open, int(Sub.Sea_Goods)) // an empty list is never shown
+	testing.expect_value(t, g.sub, Sub.Market)
 	// No world changes: islands never trade sea goods.
 	for i in 0 ..< g.n_islands {
 		for good in Good.Whale_Oil ..= Good.Coral {testing.expect(t, good not_in g.trades[i])}
@@ -2176,4 +2187,320 @@ encounter_state_round_trips :: proc(t: ^testing.T) {
 	testing.expect_value(t, h.foe.kind, Foe_Kind.None)
 	testing.expect_value(t, h.cargo[.Whale_Oil], 0)
 	testing.expect_value(t, h.cargo[.Pepper], 3)
+}
+
+// Phase 9: wind, calendar, storms and rats.
+
+@(test)
+the_calendar :: proc(t: ^testing.T) {
+	testing.expect_value(t, MONTH_NAMES[month(0)], "Mar")
+	testing.expect_value(t, day_of_month(0), 1)
+	testing.expect_value(t, year(0), 1)
+	testing.expect_value(t, season(0), Season.Spring)
+	testing.expect_value(t, season(90), Season.Summer)
+	testing.expect_value(t, MONTH_NAMES[month(90)], "Jun")
+	testing.expect_value(t, season(180), Season.Autumn)
+	testing.expect_value(t, MONTH_NAMES[month(300)], "Jan")
+	testing.expect_value(t, year(300), 2)
+	testing.expect_value(t, season(300), Season.Winter)
+	testing.expect_value(t, day_of_month(329), 30)
+	testing.expect_value(t, season(TURN_LIMIT - 1), season((TURN_LIMIT - 1) % 360)) // a year is 360 turns
+}
+
+@(test)
+the_wind_speeds_and_slows :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	testing.expect_value(t, wind_factor(g), 1) // tests sail without weather
+	g.weather_off = false
+	g.wind_dir, g.wind_force = 270, .Strong // from the west
+	g.ship.heading = 90
+	testing.expect(t, near(wind_factor(g), 1.30)) // running before it
+	g.ship.heading = 270
+	testing.expect(t, near(wind_factor(g), 0.60)) // into it
+	g.ship.heading = 0
+	testing.expect(t, near(wind_factor(g), 0.95)) // across it
+	g.wind_force = .Calm
+	testing.expect(t, near(wind_factor(g), 0.70))
+	for f in Wind_Force {
+		g.wind_force = f
+		for h in 0 ..< 360 {
+			g.ship.heading = h
+			w := wind_factor(g)
+			testing.expect(t, w >= 0.6 - 0.001 && w <= 1.3 + 0.001)
+		}
+	}
+	// It moves the ship.
+	g.wind_force = .Strong
+	g.ship = {x = 60.5, y = 60.5, heading = 90, speed = 100}
+	do_cmd(g, .Sail, 1)
+	testing.expect(t, abs(g.ship.x - 61.8) < 0.01)
+}
+
+@(test)
+the_wind_shifts_with_the_seasons :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	g.weather_off = false
+	changes, strong := 0, 0
+	dir := g.wind_dir
+	for turn in 0 ..< 2000 {
+		g.turn = turn
+		weather_turn(g)
+		g.n_storms = 0
+		testing.expect(t, g.wind_dir >= 0 && g.wind_dir < 360)
+		if g.wind_dir != dir {changes += 1}
+		dir = g.wind_dir
+		if g.wind_force == .Strong {strong += 1}
+	}
+	testing.expect(t, changes > 50 && changes < 400)
+	testing.expect(t, strong > 0 && strong < 2000)
+}
+
+@(test)
+storms_drift_downwind_and_blow_out :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	g.weather_off = false
+	g.wind_dir, g.wind_force = 0, .Fresh // from the north: storms drift south
+	g.storms[0] = {x = 30, y = 30, radius = 2, turns = 2}
+	g.n_storms = 1
+	g.weather = rng_make(1)
+	weather_turn(g)
+	testing.expect(t, g.n_storms >= 1)
+	testing.expect(t, near(g.storms[0].x, 30))
+	testing.expect(t, abs(g.storms[0].y - 30.35) < 0.01)
+	weather_turn(g)
+	for k in 0 ..< g.n_storms {testing.expect(t, g.storms[k].turns > 1)} // the old one blew out
+	// Storms form often enough to matter in the stormy months and keep their distance when they do.
+	formed := 0
+	g.n_storms = 0
+	for turn in 0 ..< 2500 {
+		g.turn = turn
+		before := g.n_storms
+		weather_turn(g)
+		if g.n_storms > before {
+			formed += 1
+			st := g.storms[g.n_storms - 1]
+			dx, dy := st.x - g.ship.x, st.y - g.ship.y
+			testing.expect(t, dx * dx + dy * dy >= (STORM_NEAR - 0.5) * (STORM_NEAR - 0.5))
+			testing.expect(t, st.radius >= 1.5 && st.radius <= 4)
+		}
+	}
+	testing.expect(t, formed > 5 && formed < 60)
+}
+
+@(test)
+a_storm_batters_the_hull :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	g.storms[0] = {x = 60.5, y = 60.5, radius = 3, turns = 100, seen = true}
+	g.n_storms = 1
+	do_cmd(g, .Set_Speed, 0)
+	do_cmd(g, .Sail, 1)
+	testing.expect(t, g.hull < hull_max(g))
+	testing.expect(t, g.hull >= hull_max(g) - STORM_DAMAGE_HI - 2)
+	testing.expect(t, in_storm(g) || g.ship.y != 60.5) // driven before the wind
+	// Docked ships are safe.
+	h := new(Game)
+	defer free(h)
+	title(h, 5)
+	voyage(h)
+	h.storms[0] = {x = h.ship.x, y = h.ship.y, radius = 3, turns = 100}
+	h.n_storms = 1
+	tick(h, false)
+	testing.expect_value(t, h.hull, hull_max(h))
+	// A long storm sinks a ship.
+	g.hull = 3
+	g.storms[0] = {x = g.ship.x, y = g.ship.y, radius = 4, turns = 100, seen = true}
+	do_cmd(g, .Sail, 10)
+	testing.expect_value(t, g.outcome, Outcome.Sank)
+}
+
+@(test)
+sailing_stops_for_storms :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	g.ship.heading = 90
+	g.storms[0] = {x = 80.5, y = 60.5, radius = 2, turns = 150}
+	g.n_storms = 1
+	do_cmd(g, .Sail, 25)
+	testing.expect(t, g.storms[0].seen)
+	testing.expect(t, g.turn < 25)
+	testing.expect(t, !in_storm(g))
+	for _ in 0 ..< 5 {
+		if g.sub == .Encounter {end_encounter(g)} // anything met on the way
+		do_cmd(g, .Sail, 25)
+		if in_storm(g) {break}
+	}
+	testing.expect(t, in_storm(g))
+	if g.sub == .Encounter {end_encounter(g)}
+	turn := g.turn
+	do_cmd(g, .Sail, 3) // once inside, it sails on through
+	testing.expect_value(t, g.turn, turn + 3)
+}
+
+@(test)
+a_course_keeps_clear_of_storms :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	g.islands[0] = {x = 60, y = 30, charted = true}
+	for y in 30 ..< 32 {for x in 60 ..< 62 {g.land[y * WORLD_SIZE + x] = 1}}
+	g.n_islands = 1
+	g.ship = {x = 60.5, y = 52.5, heading = 0, speed = 100}
+	g.storms[0] = {x = 60.5, y = 45, radius = 3, turns = 150, seen = true}
+	g.n_storms = 1
+	do_cmd(g, .Head_For, 0)
+	testing.expect_value(t, g.course, 0)
+	testing.expect(t, g.ship.heading != 0) // round it, not straight through
+	for _ in 0 ..< 60 {
+		if g.course == NO_ISLAND {break}
+		do_cmd(g, .Sail, 1)
+		testing.expect(t, !in_storm(g))
+	}
+	testing.expect(t, arrived(g) || g.course == NO_ISLAND)
+	near_isles: [ISLAND_MAX]int
+	testing.expect(t, dockable(g, near_isles[:]) == 1)
+	// Boxed in, it goes through.
+	g.storms[0] = {x = 60.5, y = 40, radius = 4, turns = 150, seen = true}
+	g.ship = {x = 60.5, y = 40, heading = 0, speed = 100}
+	_, _, ok := steer(g, 0)
+	testing.expect(t, ok)
+}
+
+@(test)
+seasons_move_prices :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	trading_post(g) // flour at par asks 6
+	g.weather_off = false
+	testing.expect_value(t, sell_price(g, 0, .Flour), 7) // spring: grain 110%
+	g.turn = 200 // September
+	testing.expect_value(t, sell_price(g, 0, .Flour), 5) // after the harvest
+	g.turn = 300 // January
+	testing.expect_value(t, sell_price(g, 0, .Flour), 8)
+	testing.expect_value(t, sell_price(g, 0, .Pepper), 40) // spice keeps its price in winter
+	g.weather_off = true
+	testing.expect_value(t, sell_price(g, 0, .Flour), 6)
+}
+
+@(test)
+rats_come_aboard_breed_and_feed :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	title(g, 5)
+	voyage(g)
+	g.weather_off = false
+	boarded := false
+	for _ in 0 ..< 40 {
+		do_cmd(g, .Undock, 0)
+		do_cmd(g, .Dock, NO_ISLAND)
+		if g.rats > 0 {
+			boarded = true
+			break
+		}
+	}
+	testing.expect(t, boarded)
+	testing.expect(t, g.rats >= 2 && g.rats <= 6)
+
+	h := new(Game)
+	defer free(h)
+	open_sea(h)
+	h.weather_off = false
+	h.rats = 200
+	h.rations = 1000
+	h.cargo[.Flour] = 40
+	h.cargo[.Pepper] = 5
+	do_cmd(h, .Set_Speed, 0)
+	h.n_storms = 0
+	do_cmd(h, .Sail, 25)
+	testing.expect(t, h.rations < 1000 - 25 - 10 * 20) // 200 rats eat ten a turn
+	testing.expect(t, h.cargo[.Flour] < 40)
+	testing.expect_value(t, h.cargo[.Pepper], 5) // they don't eat pepper
+	testing.expect_value(t, h.spoiled, 0) // reported
+	testing.expect(t, h.rats <= RATS_MAX)
+}
+
+@(test)
+hunting_rats :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	open_sea(g)
+	do_cmd(g, .Open, int(Sub.Crew))
+	do_cmd(g, .Open, int(Sub.Orders))
+	m := menu(g)
+	testing.expect_value(t, m.n, 2) // Fish, Back: no rats
+	g.rats = 10
+	g.crew[0].skills[.Track] = 100
+	turn := g.turn
+	testing.expect_value(t, menu(g).items[1].cmd, Cmd.Hunt_Rats)
+	do_cmd(g, .Hunt_Rats, 0)
+	testing.expect_value(t, g.turn, turn + HUNT_TURNS)
+	testing.expect_value(t, g.rats, 0)
+	testing.expect_value(t, g.sub, Sub.Crew)
+	// Docked, Orders shows only with rats aboard.
+	h := new(Game)
+	defer free(h)
+	title(h, 5)
+	voyage(h)
+	do_cmd(h, .Open, int(Sub.Crew))
+	for k in 0 ..< menu(h).n {testing.expect(t, menu(h).items[k].arg != int(Sub.Orders) || menu(h).items[k].cmd != .Open)}
+	h.rats = 5
+	found := false
+	for k in 0 ..< menu(h).n {if menu(h).items[k].cmd == .Open && menu(h).items[k].arg == int(Sub.Orders) {found = true}}
+	testing.expect(t, found)
+}
+
+@(test)
+weather_state_round_trips :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	title(g, 5)
+	voyage(g)
+	do_cmd(g, .Undock, 0)
+	g.weather_off = false
+	for _ in 0 ..< 40 {weather_turn(g)}
+	g.wind_dir, g.wind_force = 135, .Strong
+	g.storms[0] = {x = 33.25, y = 70.5, radius = 2.7, turns = 88, seen = true}
+	g.storms[1] = {x = 10, y = 11, radius = 4, turns = 150}
+	g.n_storms = 2
+	g.rats = 17
+	buf: [SAVE_SIZE]u8
+	save_encode(g, &buf)
+	h := new(Game)
+	defer free(h)
+	title(h, 3)
+	testing.expect_value(t, save_decode(h, buf[:]), Load_Error.None)
+	testing.expect_value(t, h.weather.state, g.weather.state)
+	testing.expect_value(t, h.wind_dir, 135)
+	testing.expect_value(t, h.wind_force, Wind_Force.Strong)
+	testing.expect_value(t, h.n_storms, 2)
+	testing.expect(t, h.storms[0] == g.storms[0])
+	testing.expect(t, h.storms[1] == g.storms[1])
+	testing.expect_value(t, h.rats, 17)
+
+	bad := buf
+	bad[SAVE_V10_SIZE + 10] = 4 // no such force
+	title(h, 3)
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = buf
+	bad[SAVE_V10_SIZE + 11] = STORMS_MAX + 1
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+	bad = buf
+	bad[SAVE_V10_SIZE + 12 + 8] = 90 // a storm too big
+	testing.expect_value(t, save_decode(h, bad[:]), Load_Error.Range)
+
+	// A version 10 save gets fair weather, no storms and no rats.
+	v10 := buf
+	v10[3] = 10
+	testing.expect_value(t, save_decode(h, v10[:SAVE_V10_SIZE]), Load_Error.None)
+	testing.expect_value(t, h.n_storms, 0)
+	testing.expect_value(t, h.rats, 0)
+	testing.expect_value(t, h.wind_force, Wind_Force.Fresh)
 }
