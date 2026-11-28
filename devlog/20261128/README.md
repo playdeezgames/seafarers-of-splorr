@@ -27,3 +27,7 @@ Not posted. A working record.
   markets. Save version 11 (86 bytes more). Older saves get the voyage's first weather, no storms and no rats.
 - Checked in the browser pane: the HUD, a storm sighted, drawn and sailed into, the Orders menu, a rat hunt, the
   chart, and the whale encounter screen. 96 native tests.
+- **HUD rework** (the user asked, as the top-left panel was crowded): two lines at the top (Food, Health, Hull;
+  Money, Hold, Crew), a third only when something needs attention (Fed below 100, the dirtier hull side's cleanliness
+  below 90%), and a strip along the bottom with the date and season, the wind, and rats aboard. The strip hides while a
+  card covers the sea view.

@@ -415,31 +415,36 @@ draw_letter :: proc(g: ^game.Game) {
 	}
 }
 
-// Ship's condition along the top of the sea view.
+// The ship's state over the sea view (reworked at the user's request, November 28, 2026: four lines were too crowded).
+// The top bar has stores and the ship on two lines, plus a third only when satiety or a hull side needs attention. A
+// strip along the bottom has the date, the wind and any rats; it is hidden while a card or sheet covers the sea view.
+CLEAN_WARN :: 90 // percent: the dirtier side's cleanliness shows below this
 draw_hud :: proc(g: ^game.Game) {
-	// The fourth line (Phase 9) only when nothing is drawn over the sea view below the HUD.
-	OVERLAID :: bit_set[game.Sub]{.Offer, .Carried_Detail, .Crew, .Member, .Candidate, .Encounter, .Ships, .Fittings, .Fare, .Passenger, .Trade}
-	full := g.sub not_in OVERLAID
-	fill_rect(0, 0, game.PANEL_X, full ? 59 : 45, DEEP, 0.7)
 	buf: [48]u8
+	clean := min(game.hull_clean(g, .Port), game.hull_clean(g, .Starboard))
+	attention := g.satiety < game.STAT_MAX || clean < CLEAN_WARN
+	fill_rect(0, 0, game.PANEL_X, attention ? 45 : 31, DEEP, 0.7)
 	food: u32 = g.rations == 0 ? RED : (g.rations < 100 ? GOLD : WHITE)
 	draw_text(4, 12, fmt.bprintf(buf[:], "Food %d", g.rations), food, 1, false)
-	draw_text(84, 12, fmt.bprintf(buf[:], "Fed %d", g.satiety), g.satiety < 50 ? GOLD : WHITE, 1, false)
-	draw_text(150, 12, fmt.bprintf(buf[:], "Health %d", g.health), g.health < 50 ? RED : WHITE, 1, false)
-	p, sb := game.hull_clean(g, .Port), game.hull_clean(g, .Starboard)
-	hull_low := g.hull * 2 < game.hull_max(g)
-	draw_text(4, 26, fmt.bprintf(buf[:], "Hull %d/%d", g.hull, game.hull_max(g)), hull_low ? RED : WHITE, 1, false)
-	draw_text(84, 26, fmt.bprintf(buf[:], "Clean %d%%/%d%%", p, sb), min(p, sb) < 60 ? GOLD : DIM, 1, false)
-	draw_text(4, 40, fmt.bprintf(buf[:], "Money %d", g.money), GOLD, 1, false)
+	draw_text(80, 12, fmt.bprintf(buf[:], "Health %d", g.health), g.health < 50 ? RED : WHITE, 1, false)
+	draw_text(160, 12, fmt.bprintf(buf[:], "Hull %d/%d", g.hull, game.hull_max(g)), g.hull * 2 < game.hull_max(g) ? RED : WHITE, 1, false)
+	draw_text(4, 26, fmt.bprintf(buf[:], "Money %d", g.money), GOLD, 1, false)
 	used := game.hold_used(g)
-	draw_text(110, 40, fmt.bprintf(buf[:], "Hold %d/%d", used, game.hold_tons(g)), used >= game.hold_tons(g) ? GOLD : WHITE, 1, false)
-	draw_text(180, 40, fmt.bprintf(buf[:], "Crew %d", g.n_crew), WHITE, 1, false)
-	// Phase 9: the date and season, the wind, and any rats.
-	if !full {return}
+	draw_text(80, 26, fmt.bprintf(buf[:], "Hold %d/%d", used, game.hold_tons(g)), used >= game.hold_tons(g) ? GOLD : WHITE, 1, false)
+	draw_text(160, 26, fmt.bprintf(buf[:], "Crew %d", g.n_crew), WHITE, 1, false)
+	if attention {
+		if g.satiety < game.STAT_MAX {draw_text(4, 40, fmt.bprintf(buf[:], "Fed %d", g.satiety), g.satiety < 50 ? RED : GOLD, 1, false)}
+		if clean < CLEAN_WARN {draw_text(80, 40, fmt.bprintf(buf[:], "Hull clean %d%%", clean), clean < 60 ? GOLD : DIM, 1, false)}
+	}
+
+	OVERLAID :: bit_set[game.Sub]{.Offer, .Carried_Detail, .Crew, .Member, .Candidate, .Encounter, .Ships, .Fittings, .Fare, .Passenger, .Trade}
+	if g.sub in OVERLAID {return}
+	y := f32(game.LOGICAL_H)
+	fill_rect(0, y - 15, game.PANEL_X, 15, DEEP, 0.7)
 	s := game.season(g.turn)
-	draw_text(4, 54, fmt.bprintf(buf[:], "%d %s %s", game.day_of_month(g.turn), game.MONTH_NAMES[game.month(g.turn)], game.SEASON_NAMES[s]), s == .Autumn || s == .Winter ? GOLD : DIM, 1, false)
-	draw_text(98, 54, fmt.bprintf(buf[:], "Wind %s %s", game.compass(g.wind_dir), game.WIND_NAMES[g.wind_force]), g.wind_force == .Strong ? GOLD : WHITE, 1, false)
-	if g.rats > 0 {draw_text(192, 54, fmt.bprintf(buf[:], "Rats %d", g.rats), g.rats >= 50 ? RED : GOLD, 1, false)}
+	draw_text(4, y - 4, fmt.bprintf(buf[:], "%d %s %s", game.day_of_month(g.turn), game.MONTH_NAMES[game.month(g.turn)], game.SEASON_NAMES[s]), s == .Autumn || s == .Winter ? GOLD : DIM, 1, false)
+	draw_text(98, y - 4, fmt.bprintf(buf[:], "Wind %s %s", game.compass(g.wind_dir), game.WIND_NAMES[g.wind_force]), g.wind_force == .Strong ? GOLD : WHITE, 1, false)
+	if g.rats > 0 {draw_text(192, y - 4, fmt.bprintf(buf[:], "Rats %d", g.rats), g.rats >= 50 ? RED : GOLD, 1, false)}
 }
 
 // One person's skills over the sea view.
