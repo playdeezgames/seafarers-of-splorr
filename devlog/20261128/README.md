@@ -57,3 +57,11 @@ Not posted. A working record.
 - **Careening in a submenu** (the user's request): the ship menu's two careen lines were too long to fit; now one
   "Careen, 87% clean" item (the dirtier side) opens Port side / Starboard, and careening or Back returns to the ship
   menu.
+- **Training** (the user's request; they approved Claude's design): a third of the islands (four to eight) have a
+  school or master (a navigators' school, a pilots' guild, a master shipwright, a lookouts' tower, a hunters' lodge, a
+  merchants' hall, a card sharp, a fencing master), and the eight skills are dealt out among them, so each is taught
+  somewhere and a school teaches one or two. Docking (and the home port) says "Taught here: Track." Pick anyone aboard,
+  captain included, from Crew: their menu offers "Train Track 10%, 15" for each skill taught there that you can pay
+  for. A lesson adds 5 points (to at most 95), costs 10 + skill²/20 (15 at 10%, 135 at 50%, 330 at 80%), and takes
+  three turns in port. Logged as "trained at". Schools come from the world seed, so saves are unchanged. Checked in
+  the browser: Doni's Track 10% to 15%.

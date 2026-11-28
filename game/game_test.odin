@@ -2643,3 +2643,68 @@ a_full_log_keeps_the_crews_fates :: proc(t: ^testing.T) {
 	testing.expect_value(t, g.logbook[0].kind, Log_Kind.Began)
 	testing.expect_value(t, g.logbook[LOGBOOK_MAX - 1].value, LOGBOOK_MAX - 1)
 }
+
+// Training (the user's request, November 28, 2026).
+@(test)
+schools_teach_every_skill :: proc(t: ^testing.T) {
+	for seed in 1 ..= 30 {
+		g := new(Game)
+		defer free(g)
+		title(g, u64(seed))
+		voyage(g)
+		taught: bit_set[Skill]
+		n := 0
+		for i in 0 ..< g.n_islands {
+			if g.schools[i] == {} {continue}
+			n += 1
+			testing.expect(t, card(g.schools[i]) <= 2)
+			taught += g.schools[i]
+		}
+		testing.expect(t, n >= min(SCHOOLS_MIN, g.n_islands) && n <= SCHOOLS_MAX)
+		testing.expect_value(t, taught, bit_set[Skill]{.Navigate, .Pilot, .Repair, .Spot, .Track, .Bargain, .Gaming, .Melee})
+		// From the seed: the same world gets the same schools.
+		h := new(Game)
+		defer free(h)
+		title(h, u64(seed))
+		voyage(h)
+		testing.expect(t, g.schools == h.schools)
+	}
+}
+
+@(test)
+a_lesson :: proc(t: ^testing.T) {
+	g := new(Game)
+	defer free(g)
+	busy_port(g)
+	g.schools[0] = {.Melee}
+	g.money = 1000
+	v := g.crew[0].skills[.Melee]
+	fee := lesson_fee(v)
+	turn := g.turn
+	do_cmd(g, .Open, int(Sub.Crew))
+	do_cmd(g, .Pick_Member, 0) // the captain trains too
+	m := menu(g)
+	testing.expect(t, m.items[0].cmd == .Train && m.items[0].arg == int(Skill.Melee))
+	testing.expect_value(t, m.n, 2) // Train, Back: only what is taught here
+	choose(g, 0)
+	testing.expect_value(t, g.crew[0].skills[.Melee], v + LESSON_GAIN)
+	testing.expect(t, g.money <= 1000 - fee)
+	testing.expect_value(t, g.turn, turn + LESSON_TURNS)
+	testing.expect_value(t, g.logbook[g.n_logbook - 1].kind, Log_Kind.Trained)
+	// The fee rises with the skill, and stops at the cap.
+	testing.expect(t, lesson_fee(50) > lesson_fee(20))
+	g.crew[0].skills[.Melee] = TRAIN_CAP
+	testing.expect(t, !can_train(g, 0, .Melee))
+	g.crew[0].skills[.Melee] = 40
+	g.money = lesson_fee(40) - 1 // can't pay: not offered
+	testing.expect_value(t, menu(g).n, 1)
+	do_cmd(g, .Train, int(Skill.Melee))
+	testing.expect_value(t, g.crew[0].skills[.Melee], 40)
+	// Nothing taught but what the school teaches, and nothing at sea.
+	g.money = 1000
+	testing.expect(t, !can_train(g, 0, .Spot))
+	do_cmd(g, .Back, 0)
+	do_cmd(g, .Back, 0)
+	do_cmd(g, .Undock, 0)
+	testing.expect(t, !can_train(g, 0, .Melee))
+}

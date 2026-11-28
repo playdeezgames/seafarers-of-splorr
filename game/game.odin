@@ -142,6 +142,7 @@ Cmd :: enum u8 {
 	Mer_Buy, // arg: Good
 	Mer_Sell,
 	Hunt_Rats,
+	Train, // arg: Skill, for crew member g.pick
 }
 
 HEAD_FOR_PAGE :: MENU_MAX - 2 // islands a page when they do not all fit: leaves room for More and Back
@@ -197,6 +198,7 @@ Game :: struct {
 	trades:     [ISLAND_MAX]bit_set[Good], // from the seed
 	trade_good: int, // the good open in the Trade submenu, or RATIONS
 	districts:  [ISLAND_MAX]bit_set[District], // from the seed
+	schools:    [ISLAND_MAX]bit_set[Skill], // what each island teaches, from the seed (training)
 	offers:     [OFFERS_MAX]Delivery, // at the docked island's delivery service
 	n_offers:   int,
 	carried:    [CARRY_MAX]Delivery,
@@ -272,6 +274,7 @@ start_world :: proc(g: ^Game, seed: u64) {
 	g.cargo = {}
 	generate_markets(g)
 	generate_districts(g)
+	generate_schools(g)
 	generate_stakes(g)
 	g.hand_state = .None
 	for i in 0 ..< ISLAND_MAX {g.seen[i] = {turn = NEVER_SEEN}}
@@ -539,6 +542,12 @@ crew_menu :: proc(g: ^Game, m: ^Menu) {
 		if g.screen == .Sea {put(g, m, .Fish, 0, fmt.bprintf(g.menu_text[m.n][:], "Fish (%d turns)", FISH_TURNS))}
 		if g.rats > 0 {put(g, m, .Hunt_Rats, 0, fmt.bprintf(g.menu_text[m.n][:], "Hunt rats (%d turns)", HUNT_TURNS))}
 	case .Member:
+		// Lessons this member can take here (only those you can pay for, below the cap).
+		for s in Skill {
+			if can_train(g, g.pick, s) {
+				put(g, m, .Train, int(s), fmt.bprintf(g.menu_text[m.n][:], "Train %s %d%%, %d", SKILL_NAMES[s], g.crew[g.pick].skills[s], lesson_fee(g.crew[g.pick].skills[s])))
+			}
+		}
 		if g.screen == .Docked && g.pick >= 1 && g.pick < g.n_crew {put(g, m, .Dismiss, 0, "Pay off and dismiss")}
 	case .Tavern:
 		for k in 0 ..< g.n_candidates {
@@ -809,6 +818,20 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		if arg < 0 || arg >= g.n_crew {return}
 		g.pick = arg
 		open(g, .Member)
+	case .Train:
+		if g.sub != .Member || arg < 0 || arg > int(max(Skill)) {return}
+		nb: [NAME_LEN]u8
+		name := member_name(g.crew[g.pick], nb[:])
+		fee := lesson_fee(g.crew[g.pick].skills[Skill(arg)])
+		before, after := train(g, g.pick, Skill(arg))
+		if after == before {
+			sound(g, .Deny)
+			return
+		}
+		sound(g, .Coins)
+		logf(g, "%s: %s %d%% to %d%%.", name, SKILL_NAMES[Skill(arg)], before, after)
+		logf(g, "Lesson %d, %d turns.", fee, LESSON_TURNS)
+		g.want_save = true
 	case .Dismiss:
 		if g.sub != .Member {return}
 		nb: [NAME_LEN]u8
@@ -1078,6 +1101,10 @@ do_cmd :: proc(g: ^Game, cmd: Cmd, arg: int) {
 		open(g, .None)
 		sound(g, .Dock)
 		logf(g, "Docked at %s.", island_name(g, target))
+		if g.schools[target] != {} {
+			sb: [48]u8
+			logf(g, "Taught here: %s.", school_skills(g, target, sb[:]))
+		}
 		if g.seen[target].turn == NEVER_SEEN {note(g, .Landfall, target, 0)}
 		if done, paid := complete_deliveries(g); done > 0 {
 			sound(g, .Coins)

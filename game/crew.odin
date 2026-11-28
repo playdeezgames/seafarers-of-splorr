@@ -176,6 +176,10 @@ begin_voyage :: proc(g: ^Game, p: Profession, skills: [Skill]int, with_crew := t
 	g.cursor = 0
 	if g.docked != NO_ISLAND {
 		logf(g, "Home port: %s.", island_name(g, g.docked))
+		if g.schools[g.docked] != {} {
+			sb: [48]u8
+			logf(g, "Taught here: %s.", school_skills(g, g.docked, sb[:]))
+		}
 		make_candidates(g)
 	} else {
 		logf(g, "A new voyage begins.")
@@ -358,6 +362,7 @@ Log_Kind :: enum u8 {
 	Passage, // value: fares paid
 	Victory, // value: Foe_Kind
 	Robbed, // value: money taken
+	Trained, // value: a member's name seed
 }
 
 Log_Entry :: struct {
@@ -372,7 +377,7 @@ BIG_SALE :: 500 // and sales this large
 
 // Routine entries: when the log is full the oldest of these goes first, so the crew's fates (died, left, hired, paid
 // off), fights and ships stay (the user's report of November 28, 2026: two crew gone with no entry).
-ROUTINE :: bit_set[Log_Kind]{.Landfall, .Delivered, .Won, .Sold, .Passage}
+ROUTINE :: bit_set[Log_Kind]{.Landfall, .Delivered, .Won, .Sold, .Passage, .Trained}
 
 note :: proc(g: ^Game, kind: Log_Kind, island: int, value: int) {
 	if g.n_logbook == LOGBOOK_MAX {
@@ -424,6 +429,8 @@ logbook_text :: proc(g: ^Game, e: Log_Entry, buf: []u8) -> string {
 		return fmt.bprintf(buf, "%d: %s.", e.turn, what)
 	case .Robbed:
 		return fmt.bprintf(buf, "%d: Robbed of %d.", e.turn, e.value)
+	case .Trained:
+		return fmt.bprintf(buf, "%d: %s trained at %s.", e.turn, who, at)
 	}
 	return ""
 }
